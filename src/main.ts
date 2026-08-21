@@ -10,7 +10,7 @@ const bridge =
   await waitForEvenAppBridge()
 
 const SERVER_URL =
-  'ws://192.168.178.191:3001/audio'
+  'wss://g2-copilot-production.up.railway.app/audio'
 
 type Mode =
   | 'SALES'
@@ -251,8 +251,6 @@ function addCard(
     }
   }
 
-  // Do not replace a card
-  // currently being read.
   if (
     cardIndex ===
       -1 &&
@@ -354,7 +352,7 @@ socket.binaryType =
 socket.onopen =
   async () => {
     console.log(
-      'Connected to server',
+      'Connected to cloud server',
     )
 
     const micStarted =
@@ -431,16 +429,21 @@ socket.onmessage =
   }
 
 socket.onerror =
-  () => {
+  error => {
+    console.error(
+      'WebSocket error:',
+      error,
+    )
+
     updateHud(
-      'G2 COPILOT\n\nServer connection failed.',
+      'G2 COPILOT\n\nCloud connection failed.',
     )
   }
 
 socket.onclose =
   () => {
     updateHud(
-      'G2 COPILOT\n\nServer disconnected.',
+      'G2 COPILOT\n\nCloud server disconnected.',
     )
   }
 
@@ -699,8 +702,6 @@ const unsubscribe =
           return
         }
 
-        // If viewing card,
-        // return to listening.
         if (
           cardIndex >=
           0
@@ -713,8 +714,6 @@ const unsubscribe =
           return
         }
 
-        // From listening:
-        // start manual ask.
         startManualAsk()
 
         return
