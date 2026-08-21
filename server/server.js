@@ -40,6 +40,9 @@ const MEMORY_FILE = path.join(DATA_DIR, 'memory.json')
 const ACCOUNT_CACHE_MAX_AGE_MS =
   24 * 60 * 60 * 1000
 
+const SESSION_RESEARCH_COOLDOWN_MS =
+  5 * 60 * 1000
+
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true })
 }
@@ -88,10 +91,10 @@ function saveMemory() {
 }
 
 function cleanJson(raw) {
-  return raw
+  return String(raw || '')
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/i, '')
-    .replace(/\s*```$/, '')
+    .replace(/\s*```$/i, '')
     .trim()
 }
 
@@ -101,6 +104,38 @@ function extractText(response) {
     .map(item => item.text)
     .join('\n')
     .trim()
+}
+
+function parseClaudeJson(raw) {
+  const cleaned = cleanJson(raw)
+
+  try {
+    return JSON.parse(cleaned)
+  } catch {
+    // Try to recover a JSON object embedded inside extra text
+    const firstBrace = cleaned.indexOf('{')
+    const lastBrace = cleaned.lastIndexOf('}')
+
+    if (
+      firstBrace !== -1 &&
+      lastBrace !== -1 &&
+      lastBrace > firstBrace
+    ) {
+      const candidate =
+        cleaned.slice(
+          firstBrace,
+          lastBrace + 1,
+        )
+
+      try {
+        return JSON.parse(candidate)
+      } catch {
+        // continue to fallback
+      }
+    }
+
+    return null
+  }
 }
 
 // ==================================================
@@ -149,6 +184,9 @@ wss.on('connection', g2Socket => {
   const MAX_CONVERSATION_ITEMS = 50
   const MAX_RECENT_CARDS = 14
 
+  const sessionResearchTimes =
+    new Map()
+
   const params = new URLSearchParams({
     model: 'nova-3',
     encoding: 'linear16',
@@ -171,6 +209,10 @@ wss.on('connection', g2Socket => {
   deepgramSocket.on('open', () => {
     console.log('Deepgram connected')
   })
+
+  // ==================================================
+  // COMPANY DETECTION
+  // ==================================================
 
   async function detectCompany(context) {
     const response =
@@ -212,21 +254,17 @@ No markdown.
         ],
       })
 
-    const raw = extractText(response)
+    const raw =
+      extractText(
+        response,
+      )
 
-    try {
-      const parsed = JSON.parse(cleanJson(raw))
+    const parsed =
+      parseClaudeJson(
+        raw,
+      )
 
-      return {
-        company: String(
-          parsed.company || '',
-        ).trim(),
-
-        confidence: Number(
-          parsed.confidence || 0,
-        ),
-      }
-    } catch {
+    if (!parsed) {
       console.log(
         'Company detection parse failed:',
         raw,
@@ -237,7 +275,21 @@ No markdown.
         confidence: 0,
       }
     }
+
+    return {
+      company: String(
+        parsed.company || '',
+      ).trim(),
+
+      confidence: Number(
+        parsed.confidence || 0,
+      ),
+    }
   }
+
+  // ==================================================
+  // ACCOUNT RESEARCH
+  // ==================================================
 
   function accountCacheFresh(account) {
     if (!account?.researchedAt) {
@@ -249,12 +301,17 @@ No markdown.
         account.researchedAt,
       ).getTime()
 
-    if (Number.isNaN(researchedAt)) {
+    if (
+      Number.isNaN(
+        researchedAt,
+      )
+    ) {
       return false
     }
 
     return (
-      Date.now() - researchedAt <
+      Date.now() -
+        researchedAt <
       ACCOUNT_CACHE_MAX_AGE_MS
     )
   }
@@ -284,7 +341,7 @@ Force fresh research when the user needs information that may have changed recen
 - licensing changes
 - current strategy
 
-Return ONLY:
+Return ONLY valid JSON:
 
 {
   "refresh": true
@@ -313,18 +370,16 @@ ${context}
         ],
       })
 
-    try {
-      const parsed =
-        JSON.parse(
-          cleanJson(
-            extractText(response),
-          ),
-        )
+    const parsed =
+      parseClaudeJson(
+        extractText(
+          response,
+        ),
+      )
 
-      return parsed.refresh === true
-    } catch {
-      return false
-    }
+    return (
+      parsed?.refresh === true
+    )
   }
 
   async function researchAccount(company) {
@@ -340,9 +395,11 @@ ${context}
       await tvly.search(
         query,
         {
-          searchDepth: 'basic',
+          searchDepth:
+            'basic',
           maxResults: 6,
-          includeAnswer: true,
+          includeAnswer:
+            true,
         },
       )
 
@@ -385,6 +442,11 @@ ${resultText || 'No results'}
       research,
     }
 
+    sessionResearchTimes.set(
+      company.toLowerCase(),
+      Date.now(),
+    )
+
     saveMemory()
 
     return research
@@ -405,6 +467,26 @@ ${resultText || 'No results'}
       persistentMemory.accounts[
         key
       ]
+
+    const sessionResearchedAt =
+      sessionResearchTimes.get(
+        key,
+      )
+
+    if (
+      sessionResearchedAt &&
+      Date.now() -
+        sessionResearchedAt <
+        SESSION_RESEARCH_COOLDOWN_MS &&
+      cached
+    ) {
+      console.log(
+        'Using same-session account research:',
+        company,
+      )
+
+      return cached.research
+    }
 
     let forceRefresh =
       false
@@ -427,6 +509,11 @@ ${resultText || 'No results'}
       console.log(
         'Using fresh cached account research:',
         company,
+      )
+
+      sessionResearchTimes.set(
+        key,
+        Date.now(),
       )
 
       return cached.research
@@ -469,8 +556,14 @@ ${resultText || 'No results'}
     }
   }
 
+  // ==================================================
+  // MODE PROMPTS
+  // ==================================================
+
   function modeInstructions() {
-    if (mode === 'GENERAL') {
+    if (
+      mode === 'GENERAL'
+    ) {
       return `
 MODE: GENERAL
 
@@ -486,12 +579,12 @@ Prioritize:
 - products
 - concise things to say
 - helpful follow-up questions
-
-Avoid sales framing unless the conversation itself is about business.
 `
     }
 
-    if (mode === 'MEETING') {
+    if (
+      mode === 'MEETING'
+    ) {
       return `
 MODE: MEETING
 
@@ -510,7 +603,9 @@ Prioritize:
 `
     }
 
-    if (mode === 'SCHOOL') {
+    if (
+      mode === 'SCHOOL'
+    ) {
       return `
 MODE: SCHOOL
 
@@ -556,18 +651,12 @@ Prioritize:
 - security concerns
 - staffing gaps
 - modernization
-
-Identify:
-- why now
-- who cares
-- who pays
-- who decides
-- what happens if they do nothing
-- likely objection
-- likely competitor
-- next-best action
 `
   }
+
+  // ==================================================
+  // PASSIVE CARD GENERATOR
+  // ==================================================
 
   async function generateCard(
     context,
@@ -577,16 +666,26 @@ Identify:
     const priorCards =
       recentCards.length > 0
         ? recentCards
-            .map(card => {
-              if (card.type === 'QUESTIONS') {
-                return (
-                  'QUESTIONS: ' +
-                  (card.questions || []).join(' | ')
-                )
-              }
+            .map(
+              card => {
+                if (
+                  card.type ===
+                  'QUESTIONS'
+                ) {
+                  return (
+                    'QUESTIONS: ' +
+                    (
+                      card.questions ||
+                      []
+                    ).join(
+                      ' | ',
+                    )
+                  )
+                }
 
-              return `${card.type}: ${card.body || ''}`
-            })
+                return `${card.type}: ${card.body || ''}`
+              },
+            )
             .join('\n')
         : 'None'
 
@@ -613,25 +712,47 @@ QUESTIONS
 KNOW_THIS
 NO_INSIGHT
 
-SAY_THIS:
-Maximum 22 words.
+IMPORTANT:
+ALWAYS include a "relevance" number from 1 to 10 for every non-NO_INSIGHT response.
 
-QUESTIONS:
-Give 2 or 3 questions.
-Each question maximum 13 words.
+SAY_THIS example:
 
-KNOW_THIS:
-Maximum 25 words.
+{
+  "type": "SAY_THIS",
+  "relevance": 9,
+  "body": "How are you securing agent access as AI use expands?"
+}
+
+QUESTIONS example:
+
+{
+  "type": "QUESTIONS",
+  "relevance": 9,
+  "questions": [
+    "What's driving the move away from AWS now?",
+    "Who owns the migration decision and budget?",
+    "What's the target timeline for cutover?"
+  ]
+}
+
+KNOW_THIS example:
+
+{
+  "type": "KNOW_THIS",
+  "relevance": 8,
+  "body": "A planned AWS-to-GCP migration signals a cloud modernization opportunity."
+}
 
 NO_INSIGHT:
+
 {
   "type": "NO_INSIGHT",
   "relevance": 0
 }
 
-RULES
-
-- Relevance must be 7+ to interrupt.
+RULES:
+- Relevance 7+ means worth interrupting.
+- If you forget relevance, the response is invalid.
 - Do not combine questions and facts.
 - Do not repeat cards already shown.
 - Make content readable in 1-3 seconds.
@@ -669,18 +790,21 @@ Return the single most useful HUD card now.
       })
 
     const raw =
-      extractText(response)
+      extractText(
+        response,
+      )
 
     console.log(
       'CLAUDE RAW:',
       raw,
     )
 
-    try {
-      return JSON.parse(
-        cleanJson(raw),
+    const parsed =
+      parseClaudeJson(
+        raw,
       )
-    } catch {
+
+    if (!parsed) {
       console.error(
         'Card parse failed:',
         raw,
@@ -688,18 +812,29 @@ Return the single most useful HUD card now.
 
       return null
     }
+
+    return parsed
   }
 
-  async function answerManualAsk(question) {
+  // ==================================================
+  // MANUAL ASK
+  // ==================================================
+
+  async function answerManualAsk(
+    question,
+  ) {
     console.log(
       'MANUAL ASK:',
       question,
     )
 
     const context =
-      conversation.join('\n')
+      conversation.join(
+        '\n',
+      )
 
-    let company = ''
+    let company =
+      ''
 
     let accountContext =
       'No account intelligence available.'
@@ -715,7 +850,8 @@ Return the single most useful HUD card now.
 
       if (
         company &&
-        companyResult.confidence >= 7
+        companyResult.confidence >=
+          7
       ) {
         accountContext =
           await getAccountIntel(
@@ -740,15 +876,16 @@ You are answering a DIRECT question asked through smart glasses.
 
 ${modeInstructions()}
 
-Answer directly.
+Answer the user's question directly.
 
-Use recent conversation and account research when helpful.
+Use the recent conversation and available account research when helpful.
 
 Maximum 55 words.
 
-If multiple short options are useful, provide up to 3 numbered options.
+If multiple short options would be useful, provide up to 3 numbered options.
 
 Do not mention that you are an AI.
+Do not explain hidden reasoning.
 `,
 
         messages: [
@@ -772,7 +909,9 @@ ${question}
       })
 
     const answer =
-      extractText(response)
+      extractText(
+        response,
+      )
 
     if (
       !answer ||
@@ -790,18 +929,27 @@ ${question}
     )
 
     console.log(
-      'Manual answer sent',
+      'MANUAL ANSWER SENT TO G2:',
+      answer,
     )
   }
 
   function finishManualAsk() {
-    if (!manualAskActive) {
+    if (
+      !manualAskActive
+    ) {
       return
     }
 
-    if (manualAskTimer) {
-      clearTimeout(manualAskTimer)
-      manualAskTimer = null
+    if (
+      manualAskTimer
+    ) {
+      clearTimeout(
+        manualAskTimer,
+      )
+
+      manualAskTimer =
+        null
     }
 
     const question =
@@ -809,19 +957,28 @@ ${question}
         .join(' ')
         .trim()
 
-    manualAskActive = false
-    manualAskBuffer = []
+    manualAskActive =
+      false
+
+    manualAskBuffer =
+      []
 
     if (!question) {
       return
     }
 
-    answerManualAsk(question)
+    answerManualAsk(
+      question,
+    )
   }
 
   function scheduleManualAskFinish() {
-    if (manualAskTimer) {
-      clearTimeout(manualAskTimer)
+    if (
+      manualAskTimer
+    ) {
+      clearTimeout(
+        manualAskTimer,
+      )
     }
 
     manualAskTimer =
@@ -831,10 +988,20 @@ ${question}
       )
   }
 
-  function cardSignature(card) {
-    if (card.type === 'QUESTIONS') {
+  // ==================================================
+  // DUPLICATE CARD HANDLING
+  // ==================================================
+
+  function cardSignature(
+    card,
+  ) {
+    if (
+      card.type ===
+      'QUESTIONS'
+    ) {
       return (
-        card.questions || []
+        card.questions ||
+        []
       )
         .join(' ')
         .toLowerCase()
@@ -842,11 +1009,17 @@ ${question}
         .trim()
     }
 
-    return String(card.body || '')
+    return String(
+      card.body || '',
+    )
       .toLowerCase()
       .replace(/\s+/g, ' ')
       .trim()
   }
+
+  // ==================================================
+  // PASSIVE ANALYSIS LOOP
+  // ==================================================
 
   async function runAnalysisLoop() {
     if (
@@ -856,7 +1029,8 @@ ${question}
       return
     }
 
-    analyzing = true
+    analyzing =
+      true
 
     try {
       while (
@@ -868,7 +1042,9 @@ ${question}
           transcriptRevision
 
         const context =
-          conversation.join('\n')
+          conversation.join(
+            '\n',
+          )
 
         console.log(
           `Analyzing revision ${targetRevision} in ${mode} mode`,
@@ -880,12 +1056,21 @@ ${question}
               context,
             )
 
+          console.log(
+            'COMPANY:',
+            companyResult.company ||
+              'None',
+            'CONFIDENCE:',
+            companyResult.confidence,
+          )
+
           let accountContext =
             'No account intelligence available.'
 
           if (
             companyResult.company &&
-            companyResult.confidence >= 7
+            companyResult.confidence >=
+              7
           ) {
             accountContext =
               await getAccountIntel(
@@ -902,6 +1087,10 @@ ${question}
             )
 
           if (!card) {
+            console.log(
+              'CARD REJECTED: parse failure',
+            )
+
             analyzedRevision =
               targetRevision
 
@@ -912,20 +1101,54 @@ ${question}
             String(
               card.type ||
                 'NO_INSIGHT',
+            ).trim()
+
+          let relevance =
+            Number(
+              card.relevance,
             )
 
-          const relevance =
-            Number(
-              card.relevance ||
-                0,
+          // IMPORTANT FIX:
+          // Claude occasionally omits relevance even when the card is clearly useful.
+          // Default valid cards to MIN_RELEVANCE rather than silently killing them.
+          if (
+            !Number.isFinite(
+              relevance,
+            ) &&
+            type !==
+              'NO_INSIGHT'
+          ) {
+            relevance =
+              MIN_RELEVANCE
+
+            console.log(
+              'CARD WARNING: relevance missing; defaulting to',
+              MIN_RELEVANCE,
             )
+          }
 
           if (
             type ===
-              'NO_INSIGHT' ||
-            relevance <
-              MIN_RELEVANCE
+            'NO_INSIGHT'
           ) {
+            console.log(
+              'CARD REJECTED: NO_INSIGHT',
+            )
+
+            analyzedRevision =
+              targetRevision
+
+            continue
+          }
+
+          if (
+            relevance <
+            MIN_RELEVANCE
+          ) {
+            console.log(
+              `CARD REJECTED: relevance ${relevance} below ${MIN_RELEVANCE}`,
+            )
+
             analyzedRevision =
               targetRevision
 
@@ -935,20 +1158,38 @@ ${question}
           let outgoingCard =
             null
 
-          if (type === 'QUESTIONS') {
+          if (
+            type ===
+            'QUESTIONS'
+          ) {
             const questions =
               Array.isArray(
                 card.questions,
               )
                 ? card.questions
-                    .map(question =>
-                      String(question).trim(),
+                    .map(
+                      question =>
+                        String(
+                          question,
+                        ).trim(),
                     )
-                    .filter(Boolean)
-                    .slice(0, 3)
+                    .filter(
+                      Boolean,
+                    )
+                    .slice(
+                      0,
+                      3,
+                    )
                 : []
 
-            if (questions.length < 2) {
+            if (
+              questions.length <
+              2
+            ) {
+              console.log(
+                'CARD REJECTED: QUESTIONS had fewer than 2 valid questions',
+              )
+
               analyzedRevision =
                 targetRevision
 
@@ -956,19 +1197,30 @@ ${question}
             }
 
             outgoingCard = {
-              type: 'QUESTIONS',
+              type:
+                'QUESTIONS',
               relevance,
               company:
                 companyResult.company,
               questions,
             }
-          } else {
+          } else if (
+            type ===
+              'SAY_THIS' ||
+            type ===
+              'KNOW_THIS'
+          ) {
             const body =
               String(
-                card.body || '',
+                card.body ||
+                  '',
               ).trim()
 
             if (!body) {
+              console.log(
+                `CARD REJECTED: ${type} missing body`,
+              )
+
               analyzedRevision =
                 targetRevision
 
@@ -982,6 +1234,16 @@ ${question}
                 companyResult.company,
               body,
             }
+          } else {
+            console.log(
+              'CARD REJECTED: unknown type',
+              type,
+            )
+
+            analyzedRevision =
+              targetRevision
+
+            continue
           }
 
           const signature =
@@ -998,25 +1260,44 @@ ${question}
                   )
 
                 return (
-                  oldSignature === signature ||
-                  oldSignature.includes(signature) ||
-                  signature.includes(oldSignature)
+                  oldSignature ===
+                    signature ||
+                  oldSignature.includes(
+                    signature,
+                  ) ||
+                  signature.includes(
+                    oldSignature,
+                  )
                 )
               },
             )
 
           if (duplicate) {
+            console.log(
+              'CARD REJECTED: duplicate',
+            )
+
             analyzedRevision =
               targetRevision
 
             continue
           }
 
+          const cooldownRemaining =
+            CARD_COOLDOWN_MS -
+            (
+              Date.now() -
+              lastCardAt
+            )
+
           if (
-            Date.now() -
-              lastCardAt <
-            CARD_COOLDOWN_MS
+            cooldownRemaining >
+            0
           ) {
+            console.log(
+              `CARD REJECTED: cooldown active (${cooldownRemaining}ms remaining)`,
+            )
+
             analyzedRevision =
               targetRevision
 
@@ -1024,34 +1305,50 @@ ${question}
           }
 
           if (
-            g2Socket.readyState ===
+            g2Socket.readyState !==
             WebSocket.OPEN
           ) {
-            g2Socket.send(
-              JSON.stringify({
-                type: 'card',
-                card:
-                  outgoingCard,
-              }),
+            console.log(
+              'CARD REJECTED: G2 socket not open',
             )
 
-            recentCards.push(
-              outgoingCard,
-            )
+            analyzedRevision =
+              targetRevision
 
-            if (
-              recentCards.length >
-              MAX_RECENT_CARDS
-            ) {
-              recentCards =
-                recentCards.slice(
-                  -MAX_RECENT_CARDS,
-                )
-            }
-
-            lastCardAt =
-              Date.now()
+            continue
           }
+
+          g2Socket.send(
+            JSON.stringify({
+              type: 'card',
+              card:
+                outgoingCard,
+            }),
+          )
+
+          recentCards.push(
+            outgoingCard,
+          )
+
+          if (
+            recentCards.length >
+            MAX_RECENT_CARDS
+          ) {
+            recentCards =
+              recentCards.slice(
+                -MAX_RECENT_CARDS,
+              )
+          }
+
+          lastCardAt =
+            Date.now()
+
+          console.log(
+            'CARD SENT TO G2:',
+            JSON.stringify(
+              outgoingCard,
+            ),
+          )
         } catch (error) {
           console.error(
             'Analysis error:',
@@ -1063,7 +1360,8 @@ ${question}
           targetRevision
       }
     } finally {
-      analyzing = false
+      analyzing =
+        false
 
       if (
         analyzedRevision <
@@ -1074,6 +1372,10 @@ ${question}
       }
     }
   }
+
+  // ==================================================
+  // TRANSCRIPTS
+  // ==================================================
 
   deepgramSocket.on(
     'message',
@@ -1098,12 +1400,21 @@ ${question}
           transcript,
         )
 
-        if (!message.is_final) {
+        if (
+          !message.is_final
+        ) {
           return
         }
 
-        if (manualAskActive) {
+        if (
+          manualAskActive
+        ) {
           manualAskBuffer.push(
+            transcript,
+          )
+
+          console.log(
+            'MANUAL QUESTION CHUNK:',
             transcript,
           )
 
@@ -1126,7 +1437,8 @@ ${question}
             )
         }
 
-        transcriptRevision += 1
+        transcriptRevision +=
+          1
 
         runAnalysisLoop()
       } catch (error) {
@@ -1137,6 +1449,10 @@ ${question}
       }
     },
   )
+
+  // ==================================================
+  // CONTROL MESSAGES
+  // ==================================================
 
   function handleControlMessage(
     payload,
@@ -1163,7 +1479,8 @@ ${question}
           requested,
         )
       ) {
-        mode = requested
+        mode =
+          requested
 
         console.log(
           'MODE:',
@@ -1172,7 +1489,8 @@ ${question}
 
         g2Socket.send(
           JSON.stringify({
-            type: 'mode_changed',
+            type:
+              'mode_changed',
             mode,
           }),
         )
@@ -1185,11 +1503,22 @@ ${question}
       payload.type ===
       'manual_ask_start'
     ) {
-      manualAskActive = true
-      manualAskBuffer = []
+      console.log(
+        'MANUAL ASK MODE STARTED',
+      )
 
-      if (manualAskTimer) {
-        clearTimeout(manualAskTimer)
+      manualAskActive =
+        true
+
+      manualAskBuffer =
+        []
+
+      if (
+        manualAskTimer
+      ) {
+        clearTimeout(
+          manualAskTimer,
+        )
       }
 
       return
@@ -1199,40 +1528,64 @@ ${question}
       payload.type ===
       'manual_ask_cancel'
     ) {
-      manualAskActive = false
-      manualAskBuffer = []
+      console.log(
+        'MANUAL ASK CANCELLED',
+      )
 
-      if (manualAskTimer) {
-        clearTimeout(manualAskTimer)
-        manualAskTimer = null
+      manualAskActive =
+        false
+
+      manualAskBuffer =
+        []
+
+      if (
+        manualAskTimer
+      ) {
+        clearTimeout(
+          manualAskTimer,
+        )
+
+        manualAskTimer =
+          null
       }
 
       runAnalysisLoop()
     }
   }
 
+  // ==================================================
+  // G2 SOCKET
+  // ==================================================
+
   g2Socket.on(
     'message',
     data => {
       if (
-        typeof data === 'string'
+        typeof data ===
+        'string'
       ) {
         try {
           handleControlMessage(
-            JSON.parse(data),
+            JSON.parse(
+              data,
+            ),
           )
 
           return
         } catch {
-          // continue
+          // continue as audio
         }
       }
 
       if (
-        Buffer.isBuffer(data)
+        Buffer.isBuffer(
+          data,
+        )
       ) {
         const maybeText =
-          data.toString('utf8')
+          data.toString(
+            'utf8',
+          )
 
         if (
           maybeText.startsWith(
@@ -1248,7 +1601,7 @@ ${question}
 
             return
           } catch {
-            // audio
+            // continue as audio
           }
         }
       }
@@ -1257,7 +1610,9 @@ ${question}
         deepgramSocket.readyState ===
         WebSocket.OPEN
       ) {
-        deepgramSocket.send(data)
+        deepgramSocket.send(
+          data,
+        )
       }
     },
   )
@@ -1284,11 +1639,18 @@ ${question}
   g2Socket.on(
     'close',
     () => {
-      conversation = []
-      recentCards = []
+      conversation =
+        []
 
-      if (manualAskTimer) {
-        clearTimeout(manualAskTimer)
+      recentCards =
+        []
+
+      if (
+        manualAskTimer
+      ) {
+        clearTimeout(
+          manualAskTimer,
+        )
       }
 
       if (
@@ -1312,7 +1674,8 @@ ${question}
 // ==================================================
 
 const PORT =
-  process.env.PORT || 3001
+  process.env.PORT ||
+  3001
 
 server.listen(
   PORT,
