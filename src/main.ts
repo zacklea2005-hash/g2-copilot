@@ -25,6 +25,8 @@ type Card = {
     | 'KNOW_THIS'
 
   relevance: number
+  urgency?: number
+  novelty?: number
 
   body?: string
   questions?: string[]
@@ -39,7 +41,7 @@ type SessionContext = {
 }
 
 // ==================================================
-// STATE
+// OPTIONS
 // ==================================================
 
 const modes: Mode[] = [
@@ -49,12 +51,26 @@ const modes: Mode[] = [
   'SCHOOL',
 ]
 
-let mode: Mode =
-  'SALES'
+const courseOptions = [
+  'STAT 340',
+  'MATH 340',
+  'LIS 462',
+  'COMP SCI 320',
+  'OTHER / NO CLASS',
+]
 
+// ==================================================
+// STATE
+// ==================================================
+
+let mode: Mode = 'SALES'
 let modeIndex = 0
 
+let courseIndex = 0
+
 let selectingMode = true
+let selectingCourse = false
+
 let choosingContext = false
 let speakingContext = false
 
@@ -68,7 +84,6 @@ let currentContext:
   | null = null
 
 const cards: Card[] = []
-
 let cardIndex = -1
 
 let socket:
@@ -78,10 +93,9 @@ let socket:
 let micStarted = false
 
 let intentionalExit = false
+
 let reconnectTimer:
-  | ReturnType<
-      typeof setTimeout
-    >
+  | ReturnType<typeof setTimeout>
   | null = null
 
 let reconnectAttempts = 0
@@ -96,9 +110,12 @@ const mainText =
     yPosition: 0,
     width: 576,
     height: 288,
+
     borderWidth: 0,
     borderColor: 5,
+
     paddingLength: 8,
+
     containerID: 1,
     containerName: 'main',
 
@@ -136,6 +153,8 @@ function updateHud(
 
 function showModeMenu() {
   selectingMode = true
+  selectingCourse = false
+
   choosingContext = false
   speakingContext = false
 
@@ -168,11 +187,104 @@ function changeMode(
 }
 
 // ==================================================
-// CONTEXT
+// SCHOOL COURSE MENU
+// ==================================================
+
+function showCourseMenu() {
+  selectingMode = false
+  selectingCourse = true
+
+  choosingContext = false
+  speakingContext = false
+
+  updateHud(
+    'SELECT CLASS\n\n' +
+      `> ${courseOptions[courseIndex]}\n\n` +
+      '↑ ↓ change\n' +
+      'Tap: select',
+  )
+}
+
+function changeCourse(
+  direction: number,
+) {
+  courseIndex += direction
+
+  if (courseIndex < 0) {
+    courseIndex =
+      courseOptions.length - 1
+  }
+
+  if (
+    courseIndex >=
+    courseOptions.length
+  ) {
+    courseIndex = 0
+  }
+
+  showCourseMenu()
+}
+
+function selectCourse() {
+  const selected =
+    courseOptions[courseIndex]
+
+  selectingCourse = false
+
+  if (
+    selected ===
+    'OTHER / NO CLASS'
+  ) {
+    currentContext = null
+
+    sendControl({
+      type: 'context_skip',
+    })
+
+    listeningScreen()
+
+    return
+  }
+
+  currentContext = {
+    summary:
+      `${selected} class`,
+
+    course: selected,
+
+    company: '',
+    topic: '',
+  }
+
+  updateHud(
+    'CLASS SELECTED\n\n' +
+      selected +
+      '\n\nPreparing...',
+  )
+
+  sendControl({
+    type: 'set_context',
+
+    context: {
+      summary:
+        `${selected} class`,
+
+      course: selected,
+
+      company: '',
+      topic: '',
+    },
+  })
+}
+
+// ==================================================
+// SALES / MEETING CONTEXT
 // ==================================================
 
 function showContextChoice() {
   selectingMode = false
+  selectingCourse = false
+
   choosingContext = true
   speakingContext = false
 
@@ -190,12 +302,11 @@ function startContextCapture() {
   speakingContext = true
 
   sendControl({
-    type:
-      'context_start',
+    type: 'context_start',
   })
 
   updateHud(
-    'PREPARING CONTEXT\n\n' +
+    'SET CONTEXT\n\n' +
       'Speak now...\n\n' +
       'Tap: cancel',
   )
@@ -206,8 +317,7 @@ function cancelContextCapture() {
   choosingContext = false
 
   sendControl({
-    type:
-      'context_skip',
+    type: 'context_skip',
   })
 
   listeningScreen()
@@ -216,22 +326,49 @@ function cancelContextCapture() {
 function skipContext() {
   choosingContext = false
   speakingContext = false
+
   currentContext = null
 
   sendControl({
-    type:
-      'context_skip',
+    type: 'context_skip',
   })
 
   listeningScreen()
 }
 
 // ==================================================
-// LISTENING
+// ROUTE AFTER MODE SELECTION
+// ==================================================
+
+function enterSelectedMode() {
+  if (mode === 'SCHOOL') {
+    showCourseMenu()
+    return
+  }
+
+  if (mode === 'GENERAL') {
+    currentContext = null
+
+    sendControl({
+      type: 'context_skip',
+    })
+
+    listeningScreen()
+
+    return
+  }
+
+  showContextChoice()
+}
+
+// ==================================================
+// LISTENING SCREEN
 // ==================================================
 
 function listeningScreen() {
   selectingMode = false
+  selectingCourse = false
+
   choosingContext = false
   speakingContext = false
 
@@ -242,17 +379,32 @@ function listeningScreen() {
         ? 'NOTES: SAVING...'
         : 'NOTES: OFF'
 
-  const contextLabel =
-    currentContext?.company ||
-    currentContext?.course ||
-    currentContext?.topic ||
-    ''
+  let contextLine = ''
+
+  if (
+    currentContext?.course
+  ) {
+    contextLine =
+      currentContext.topic
+        ? `${currentContext.course} · ${currentContext.topic}`
+        : currentContext.course
+  } else if (
+    currentContext?.company
+  ) {
+    contextLine =
+      currentContext.company
+  } else if (
+    currentContext?.topic
+  ) {
+    contextLine =
+      currentContext.topic
+  }
 
   updateHud(
     `${mode} MODE\n` +
       (
-        contextLabel
-          ? `${contextLabel}\n`
+        contextLine
+          ? `${contextLine}\n`
           : ''
       ) +
       `${notes}\n\n` +
@@ -262,7 +414,7 @@ function listeningScreen() {
 }
 
 // ==================================================
-// CARD DISPLAY
+// CARDS
 // ==================================================
 
 function renderCard(
@@ -285,8 +437,7 @@ function renderCard(
   ) {
     const lines =
       (
-        card.questions ||
-        []
+        card.questions || []
       )
         .slice(0, 3)
         .map(
@@ -318,9 +469,7 @@ function showCurrentCard() {
     cards.length === 0
   ) {
     cardIndex = -1
-
     listeningScreen()
-
     return
   }
 
@@ -339,10 +488,6 @@ function showCurrentCard() {
   )
 }
 
-// Important:
-// If a bundle sends three cards,
-// display the FIRST card and queue
-// the others behind it.
 function addCard(
   card: Card,
 ) {
@@ -367,7 +512,8 @@ function addCard(
     wasListening &&
     !manualAsk &&
     !speakingContext &&
-    !choosingContext
+    !choosingContext &&
+    !selectingCourse
   ) {
     cardIndex =
       cards.length - 1
@@ -383,16 +529,11 @@ function addBriefingCards(
     briefing.length === 0
   ) {
     listeningScreen()
-
     return
   }
 
-  const startIndex =
-    cards.length
-
   for (
-    const card of
-    briefing
+    const card of briefing
   ) {
     cards.push(card)
   }
@@ -406,13 +547,8 @@ function addBriefingCards(
   cardIndex =
     Math.max(
       0,
-      startIndex -
-        Math.max(
-          0,
-          startIndex +
-            briefing.length -
-            20,
-        ),
+      cards.length -
+        briefing.length,
     )
 
   showCurrentCard()
@@ -423,7 +559,6 @@ function previousCard() {
     cards.length === 0
   ) {
     listeningScreen()
-
     return
   }
 
@@ -446,7 +581,6 @@ function nextCard() {
     cards.length === 0
   ) {
     listeningScreen()
-
     return
   }
 
@@ -457,7 +591,6 @@ function nextCard() {
       cards.length - 1
 
     showCurrentCard()
-
     return
   }
 
@@ -468,12 +601,10 @@ function nextCard() {
     cardIndex += 1
 
     showCurrentCard()
-
     return
   }
 
   cardIndex = -1
-
   listeningScreen()
 }
 
@@ -510,17 +641,17 @@ function toggleNotes() {
     notesActive = true
 
     sendControl({
-      type:
-        'notes_start',
+      type: 'notes_start',
     })
 
     updateHud(
-      'NOTES\n\nRecording started...',
+      'NOTES\n\n' +
+        'Recording started...',
     )
 
     setTimeout(
       listeningScreen,
-      800,
+      700,
     )
 
     return
@@ -530,17 +661,17 @@ function toggleNotes() {
   notesProcessing = true
 
   sendControl({
-    type:
-      'notes_stop',
+    type: 'notes_stop',
   })
 
   updateHud(
-    'NOTES\n\nGenerating notes...',
+    'NOTES\n\n' +
+      'Generating notes...',
   )
 }
 
 // ==================================================
-// ASK ME
+// MANUAL ASK
 // ==================================================
 
 function startManualAsk() {
@@ -555,8 +686,7 @@ function startManualAsk() {
   updateHud(
     'ASK ME\n\n' +
       'Speak your question...\n\n' +
-      'Commands:\n' +
-      '"new session"',
+      '"new session" resets',
   )
 }
 
@@ -598,44 +728,8 @@ function sendControl(
 }
 
 // ==================================================
-// RECONNECT
+// MICROPHONE
 // ==================================================
-
-function scheduleReconnect() {
-  if (
-    intentionalExit ||
-    reconnectTimer
-  ) {
-    return
-  }
-
-  reconnectAttempts += 1
-
-  const delay =
-    Math.min(
-      2000 *
-        reconnectAttempts,
-      10000,
-    )
-
-  updateHud(
-    'G2 COPILOT\n\n' +
-      'Connection lost.\n' +
-      'Reconnecting...',
-  )
-
-  reconnectTimer =
-    setTimeout(
-      () => {
-        reconnectTimer = null
-
-        connectSocket(
-          true,
-        )
-      },
-      delay,
-    )
-}
 
 async function ensureMicrophone() {
   if (micStarted) {
@@ -655,7 +749,44 @@ async function ensureMicrophone() {
 }
 
 // ==================================================
-// SOCKET CONNECTION
+// RECONNECT
+// ==================================================
+
+function scheduleReconnect() {
+  if (
+    intentionalExit ||
+    reconnectTimer
+  ) {
+    return
+  }
+
+  reconnectAttempts += 1
+
+  const delay =
+    Math.min(
+      reconnectAttempts * 2000,
+      10000,
+    )
+
+  updateHud(
+    'G2 COPILOT\n\n' +
+      'Connection lost.\n' +
+      'Reconnecting...',
+  )
+
+  reconnectTimer =
+    setTimeout(
+      () => {
+        reconnectTimer = null
+
+        connectSocket(true)
+      },
+      delay,
+    )
+}
+
+// ==================================================
+// SERVER CONNECTION
 // ==================================================
 
 function connectSocket(
@@ -682,7 +813,8 @@ function connectSocket(
 
       if (!micOkay) {
         updateHud(
-          'G2 COPILOT\n\nMicrophone failed.',
+          'G2 COPILOT\n\n' +
+            'Microphone failed.',
         )
 
         return
@@ -700,7 +832,8 @@ function connectSocket(
         })
 
         updateHud(
-          'G2 COPILOT\n\nReconnected...',
+          'G2 COPILOT\n\n' +
+            'Reconnected...',
         )
 
         return
@@ -718,7 +851,7 @@ function connectSocket(
           )
 
         // ------------------------------------------
-        // CARD
+        // JARVIS CARD
         // ------------------------------------------
 
         if (
@@ -744,23 +877,18 @@ function connectSocket(
           mode =
             message.mode as Mode
 
-          const foundIndex =
-            modes.indexOf(
-              mode,
-            )
+          const index =
+            modes.indexOf(mode)
 
-          if (
-            foundIndex >= 0
-          ) {
-            modeIndex =
-              foundIndex
+          if (index >= 0) {
+            modeIndex = index
           }
 
           return
         }
 
         // ------------------------------------------
-        // CONTEXT READY + BRIEFING
+        // CONTEXT READY
         // ------------------------------------------
 
         if (
@@ -769,16 +897,10 @@ function connectSocket(
         ) {
           speakingContext = false
           choosingContext = false
+          selectingCourse = false
 
           currentContext =
             message.context || null
-
-          const summary =
-            String(
-              message.context
-                ?.summary ||
-                'Context loaded',
-            )
 
           const briefing =
             Array.isArray(
@@ -789,10 +911,20 @@ function connectSocket(
                 )
               : []
 
+          const label =
+            currentContext?.course ||
+            currentContext?.summary ||
+            currentContext?.company ||
+            'Context loaded'
+
           updateHud(
-            'CONTEXT READY\n\n' +
-              summary +
-              '\n\nBriefing ready...',
+            (
+              mode === 'SCHOOL'
+                ? 'CLASS READY\n\n'
+                : 'CONTEXT READY\n\n'
+            ) +
+              label +
+              '\n\nListening...',
           )
 
           setTimeout(
@@ -801,8 +933,28 @@ function connectSocket(
                 briefing,
               )
             },
-            1200,
+            900,
           )
+
+          return
+        }
+
+        // ------------------------------------------
+        // TOPIC AUTO-DETECTED
+        // Do not interrupt the lecture.
+        // ------------------------------------------
+
+        if (
+          message.type ===
+          'context_updated'
+        ) {
+          currentContext =
+            message.context ||
+            currentContext
+
+          // Update state silently.
+          // We intentionally do NOT
+          // replace a card or interrupt notes.
 
           return
         }
@@ -815,7 +967,6 @@ function connectSocket(
           choosingContext = false
 
           listeningScreen()
-
           return
         }
 
@@ -856,9 +1007,7 @@ function connectSocket(
               message.mode as Mode
 
             const index =
-              modes.indexOf(
-                mode,
-              )
+              modes.indexOf(mode)
 
             if (index >= 0) {
               modeIndex = index
@@ -867,20 +1016,21 @@ function connectSocket(
 
           updateHud(
             'NEW SESSION\n\n' +
-              `${mode} MODE\n\n` +
-              'Choose new context...',
+              `${mode} MODE`,
           )
 
           setTimeout(
-            showContextChoice,
-            900,
+            () => {
+              enterSelectedMode()
+            },
+            700,
           )
 
           return
         }
 
         // ------------------------------------------
-        // RECONNECT RESTORE
+        // SESSION RESTORED
         // ------------------------------------------
 
         if (
@@ -910,7 +1060,6 @@ function connectSocket(
           }
 
           listeningScreen()
-
           return
         }
 
@@ -947,7 +1096,6 @@ function connectSocket(
           notesProcessing = false
 
           listeningScreen()
-
           return
         }
 
@@ -959,7 +1107,8 @@ function connectSocket(
           notesProcessing = true
 
           updateHud(
-            'NOTES\n\nGenerating notes...',
+            'NOTES\n\n' +
+              'Generating notes...',
           )
 
           return
@@ -1031,7 +1180,7 @@ function connectSocket(
 connectSocket()
 
 // ==================================================
-// EVENT HELPER
+// EVENT TYPE
 // ==================================================
 
 function eventTypeOf(
@@ -1048,7 +1197,7 @@ function eventTypeOf(
 
   return (
     envelope.eventType ??
-    OsEventTypeList.CLICK_EVENT
+    null
   )
 }
 
@@ -1067,10 +1216,7 @@ function exitCopilot() {
     reconnectTimer = null
   }
 
-  bridge.audioControl(
-    false,
-  )
-
+  bridge.audioControl(false)
   micStarted = false
 
   if (
@@ -1135,7 +1281,6 @@ const unsubscribe =
           OsEventTypeList.DOUBLE_CLICK_EVENT
       ) {
         exitCopilot()
-
         return
       }
 
@@ -1151,7 +1296,11 @@ const unsubscribe =
       ) {
         if (selectingMode) {
           changeMode(-1)
+          return
+        }
 
+        if (selectingCourse) {
+          changeCourse(-1)
           return
         }
 
@@ -1164,7 +1313,6 @@ const unsubscribe =
         }
 
         previousCard()
-
         return
       }
 
@@ -1180,13 +1328,16 @@ const unsubscribe =
       ) {
         if (selectingMode) {
           changeMode(1)
+          return
+        }
 
+        if (selectingCourse) {
+          changeCourse(1)
           return
         }
 
         if (choosingContext) {
           skipContext()
-
           return
         }
 
@@ -1201,12 +1352,10 @@ const unsubscribe =
           cardIndex >= 0
         ) {
           nextCard()
-
           return
         }
 
         toggleNotes()
-
         return
       }
 
@@ -1220,7 +1369,7 @@ const unsubscribe =
         textType ===
           OsEventTypeList.CLICK_EVENT
       ) {
-        // SELECT MODE
+        // MODE SELECT
         if (selectingMode) {
           mode =
             modes[modeIndex]
@@ -1228,35 +1377,35 @@ const unsubscribe =
           selectingMode = false
 
           sendControl({
-            type:
-              'set_mode',
-
+            type: 'set_mode',
             mode,
           })
 
-          showContextChoice()
-
+          enterSelectedMode()
           return
         }
 
-        // CHOOSE CONTEXT
+        // SCHOOL COURSE SELECT
+        if (selectingCourse) {
+          selectCourse()
+          return
+        }
+
+        // SALES / MEETING CONTEXT
         if (choosingContext) {
           startContextCapture()
-
           return
         }
 
-        // CANCEL CONTEXT CAPTURE
+        // CANCEL SPOKEN CONTEXT
         if (speakingContext) {
           cancelContextCapture()
-
           return
         }
 
-        // CANCEL ASK ME
+        // CANCEL ASK
         if (manualAsk) {
           cancelManualAsk()
-
           return
         }
 
@@ -1267,20 +1416,17 @@ const unsubscribe =
           cardIndex = -1
 
           listeningScreen()
-
           return
         }
 
         // DISMISS NOTES STATUS
         if (notesProcessing) {
           listeningScreen()
-
           return
         }
 
-        // START ASK ME
+        // ASK ME
         startManualAsk()
-
         return
       }
 
@@ -1296,10 +1442,7 @@ const unsubscribe =
       ) {
         intentionalExit = true
 
-        bridge.audioControl(
-          false,
-        )
-
+        bridge.audioControl(false)
         micStarted = false
 
         if (socket) {
