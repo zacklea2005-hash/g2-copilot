@@ -32,22 +32,41 @@ const wss = new WebSocketServer({
 })
 
 // ==================================================
-// GOOGLE OAUTH
+// GOOGLE
 // ==================================================
 
 const GOOGLE_REDIRECT_URI =
   'https://g2-copilot-production.up.railway.app/google/callback'
 
 function createGoogleOAuthClient() {
-  return new google.auth.OAuth2(
+  const client = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
     GOOGLE_REDIRECT_URI,
   )
+
+  if (process.env.GOOGLE_REFRESH_TOKEN) {
+    client.setCredentials({
+      refresh_token:
+        process.env.GOOGLE_REFRESH_TOKEN,
+    })
+  }
+
+  return client
 }
 
+function createDriveClient() {
+  return google.drive({
+    version: 'v3',
+    auth: createGoogleOAuthClient(),
+  })
+}
+
+// Cache Drive folder IDs while this Railway container is alive.
+const driveFolderCache = new Map()
+
 // ==================================================
-// STORAGE
+// LOCAL FALLBACK STORAGE
 // ==================================================
 
 const DATA_DIR = path.join(__dirname, 'data')
@@ -65,6 +84,10 @@ if (!fs.existsSync(NOTES_DIR)) {
   fs.mkdirSync(NOTES_DIR, { recursive: true })
 }
 
+// ==================================================
+// ACCOUNT MEMORY
+// ==================================================
+
 function loadMemory() {
   try {
     if (!fs.existsSync(MEMORY_FILE)) {
@@ -81,10 +104,7 @@ function loadMemory() {
       accounts: parsed.accounts || {},
     }
   } catch (error) {
-    console.error(
-      'Memory load error:',
-      error,
-    )
+    console.error('Memory load error:', error)
 
     return {
       accounts: {},
@@ -92,8 +112,7 @@ function loadMemory() {
   }
 }
 
-let persistentMemory =
-  loadMemory()
+let persistentMemory = loadMemory()
 
 function saveMemory() {
   try {
@@ -109,10 +128,7 @@ function saveMemory() {
       ),
     )
   } catch (error) {
-    console.error(
-      'Memory save error:',
-      error,
-    )
+    console.error('Memory save error:', error)
   }
 }
 
@@ -130,29 +146,20 @@ function cleanJson(raw) {
 
 function extractText(response) {
   return response.content
-    .filter(
-      item =>
-        item.type === 'text',
-    )
+    .filter(item => item.type === 'text')
     .map(item => item.text)
     .join('\n')
     .trim()
 }
 
 function parseClaudeJson(raw) {
-  const cleaned =
-    cleanJson(raw)
+  const cleaned = cleanJson(raw)
 
   try {
-    return JSON.parse(
-      cleaned,
-    )
+    return JSON.parse(cleaned)
   } catch {
-    const firstBrace =
-      cleaned.indexOf('{')
-
-    const lastBrace =
-      cleaned.lastIndexOf('}')
+    const firstBrace = cleaned.indexOf('{')
+    const lastBrace = cleaned.lastIndexOf('}')
 
     if (
       firstBrace !== -1 &&
@@ -176,13 +183,26 @@ function parseClaudeJson(raw) {
 }
 
 function safeFilename(value) {
-  return String(
-    value || 'G2 Notes',
-  )
+  return String(value || 'G2 Notes')
     .replace(/[^\w\s-]/g, '')
     .replace(/\s+/g, '-')
     .replace(/-+/g, '-')
     .slice(0, 80)
+}
+
+function escapeDriveQuery(value) {
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+}
+
+function htmlEscape(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
 }
 
 // ==================================================
@@ -191,102 +211,51 @@ function safeFilename(value) {
 
 app.get('/', (req, res) => {
   res.send(
-    'G2 Copilot + Notes + Google Drive running',
+    'G2 Copilot + Google Drive Notes running',
   )
 })
 
-app.get(
-  '/health',
-  (req, res) => {
-    res.json({
-      status: 'ok',
-      google:
-        Boolean(
-          process.env
-            .GOOGLE_CLIENT_ID,
-        ),
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    googleClient:
+      Boolean(process.env.GOOGLE_CLIENT_ID),
+    googleToken:
+      Boolean(process.env.GOOGLE_REFRESH_TOKEN),
+    version: '4.0',
+  })
+})
+
+// ==================================================
+// GOOGLE AUTH
+// ==================================================
+
+app.get('/google/auth', (req, res) => {
+  const client = createGoogleOAuthClient()
+
+  const authUrl =
+    client.generateAuthUrl({
+      access_type: 'offline',
+      prompt: 'consent',
+
+      // drive.file lets us create our notes.
+      // metadata.readonly lets us FIND your
+      // pre-existing G2 Copilot folders.
+      scope: [
+        'https://www.googleapis.com/auth/drive.file',
+        'https://www.googleapis.com/auth/drive.metadata.readonly',
+      ],
     })
-  },
-)
 
-app.get(
-  '/notes',
-  (req, res) => {
-    try {
-      const files =
-        fs
-          .readdirSync(
-            NOTES_DIR,
-          )
-          .filter(
-            file =>
-              file.endsWith(
-                '.md',
-              ),
-          )
-
-      res.json(files)
-    } catch {
-      res.json([])
-    }
-  },
-)
-
-// ==================================================
-// GOOGLE AUTH ROUTES
-// ==================================================
-
-app.get(
-  '/google/auth',
-  (req, res) => {
-    if (
-      !process.env
-        .GOOGLE_CLIENT_ID ||
-      !process.env
-        .GOOGLE_CLIENT_SECRET
-    ) {
-      return res
-        .status(500)
-        .send(
-          'Google OAuth credentials are not configured on Railway.',
-        )
-    }
-
-    const oauth2Client =
-      createGoogleOAuthClient()
-
-    const authUrl =
-      oauth2Client.generateAuthUrl({
-        access_type:
-          'offline',
-
-        prompt:
-          'consent',
-
-        scope: [
-          'https://www.googleapis.com/auth/drive.file',
-        ],
-      })
-
-    console.log(
-      'Starting Google OAuth',
-    )
-
-    res.redirect(
-      authUrl,
-    )
-  },
-)
+  res.redirect(authUrl)
+})
 
 app.get(
   '/google/callback',
   async (req, res) => {
     try {
       const code =
-        String(
-          req.query.code ||
-            '',
-        )
+        String(req.query.code || '')
 
       if (!code) {
         return res
@@ -296,40 +265,30 @@ app.get(
           )
       }
 
-      const oauth2Client =
+      const client =
         createGoogleOAuthClient()
 
       const { tokens } =
-        await oauth2Client.getToken(
-          code,
-        )
+        await client.getToken(code)
 
       console.log(
         '\n==============================',
       )
 
-      console.log(
-        'GOOGLE OAUTH SUCCESS',
-      )
+      console.log('GOOGLE OAUTH SUCCESS')
 
-      if (
-        tokens.refresh_token
-      ) {
+      if (tokens.refresh_token) {
         console.log(
           'GOOGLE_REFRESH_TOKEN:',
           tokens.refresh_token,
         )
 
         console.log(
-          'Copy this refresh token into Railway as GOOGLE_REFRESH_TOKEN.',
+          'Replace GOOGLE_REFRESH_TOKEN in Railway with this new token.',
         )
       } else {
         console.log(
-          'NO GOOGLE REFRESH TOKEN RETURNED',
-        )
-
-        console.log(
-          'Authorize again using /google/auth.',
+          'NO NEW REFRESH TOKEN RETURNED',
         )
       }
 
@@ -338,274 +297,606 @@ app.get(
       )
 
       res.send(`
-        <!doctype html>
-        <html>
-          <head>
-            <title>G2 Copilot</title>
-          </head>
-
-          <body style="
-            font-family: Arial, sans-serif;
-            max-width: 600px;
-            margin: 80px auto;
-            padding: 20px;
-          ">
-            <h1>G2 Copilot</h1>
-
-            <h2>
-              Google Drive connected successfully.
-            </h2>
-
-            <p>
-              You can close this page.
-            </p>
-
-            <p>
-              Return to Railway and copy the
-              GOOGLE_REFRESH_TOKEN from the
-              deployment logs.
-            </p>
-          </body>
-        </html>
+        <h1>G2 Copilot</h1>
+        <h2>Google Drive connected successfully.</h2>
+        <p>Go to Railway logs and copy the new GOOGLE_REFRESH_TOKEN.</p>
       `)
     } catch (error) {
       console.error(
-        'Google OAuth callback error:',
+        'Google callback error:',
         error,
       )
 
       res
         .status(500)
         .send(
-          'Google authorization failed. Check Railway logs.',
+          'Google authorization failed.',
         )
     }
   },
 )
 
 // ==================================================
+// GOOGLE DRIVE FOLDER HELPERS
+// ==================================================
+
+async function findFolder(
+  drive,
+  name,
+  parentId = null,
+) {
+  const cacheKey =
+    `${parentId || 'ROOT'}::${name}`
+
+  if (driveFolderCache.has(cacheKey)) {
+    return driveFolderCache.get(cacheKey)
+  }
+
+  const escapedName =
+    escapeDriveQuery(name)
+
+  const queryParts = [
+    `name = '${escapedName}'`,
+    `mimeType = 'application/vnd.google-apps.folder'`,
+    `trashed = false`,
+  ]
+
+  if (parentId) {
+    queryParts.push(
+      `'${parentId}' in parents`,
+    )
+  } else {
+    queryParts.push(
+      `'root' in parents`,
+    )
+  }
+
+  const result =
+    await drive.files.list({
+      q: queryParts.join(' and '),
+      fields: 'files(id,name,parents)',
+      pageSize: 20,
+    })
+
+  const folder =
+    result.data.files?.[0]
+
+  if (!folder?.id) {
+    throw new Error(
+      `Google Drive folder not found: ${name}`,
+    )
+  }
+
+  driveFolderCache.set(
+    cacheKey,
+    folder.id,
+  )
+
+  return folder.id
+}
+
+async function getDriveFolderPath(
+  route,
+) {
+  const drive =
+    createDriveClient()
+
+  const rootId =
+    await findFolder(
+      drive,
+      'G2 Copilot',
+    )
+
+  if (route.area === 'GENERAL') {
+    const generalId =
+      await findFolder(
+        drive,
+        'General',
+        rootId,
+      )
+
+    return {
+      drive,
+      folderId: generalId,
+      path: 'G2 Copilot / General',
+    }
+  }
+
+  if (route.area === 'WORK') {
+    const workId =
+      await findFolder(
+        drive,
+        'Work',
+        rootId,
+      )
+
+    return {
+      drive,
+      folderId: workId,
+      path: 'G2 Copilot / Work',
+    }
+  }
+
+  const schoolId =
+    await findFolder(
+      drive,
+      'School',
+      rootId,
+    )
+
+  if (!route.course) {
+    return {
+      drive,
+      folderId: schoolId,
+      path: 'G2 Copilot / School',
+    }
+  }
+
+  const courseId =
+    await findFolder(
+      drive,
+      route.course,
+      schoolId,
+    )
+
+  return {
+    drive,
+    folderId: courseId,
+    path:
+      `G2 Copilot / School / ${route.course}`,
+  }
+}
+
+// ==================================================
+// CREATE GOOGLE DOC
+// ==================================================
+
+async function createGoogleDoc({
+  title,
+  html,
+  folderId,
+}) {
+  const drive =
+    createDriveClient()
+
+  const result =
+    await drive.files.create({
+      requestBody: {
+        name: title,
+
+        // Tell Drive to convert the uploaded HTML
+        // into a native Google Doc.
+        mimeType:
+          'application/vnd.google-apps.document',
+
+        parents: [
+          folderId,
+        ],
+      },
+
+      media: {
+        mimeType:
+          'text/html',
+
+        body: html,
+      },
+
+      fields:
+        'id,name,webViewLink',
+    })
+
+  return result.data
+}
+
+// ==================================================
+// ROUTE SCHOOL NOTES
+// ==================================================
+
+async function classifySchoolCourse(
+  transcript,
+) {
+  const response =
+    await anthropic.messages.create({
+      model: 'claude-sonnet-5',
+      max_tokens: 160,
+
+      system: `
+Route this university lecture transcript to exactly one of these course folders:
+
+STAT 340
+MATH 340
+LIS 462
+COMP SCI 320
+UNSURE
+
+Use the subject matter and any course name/number spoken.
+
+Return ONLY valid JSON:
+
+{
+  "course": "STAT 340",
+  "confidence": 9
+}
+
+If you genuinely cannot tell:
+
+{
+  "course": "UNSURE",
+  "confidence": 0
+}
+
+No markdown.
+`,
+
+      messages: [
+        {
+          role: 'user',
+          content: transcript,
+        },
+      ],
+    })
+
+  const parsed =
+    parseClaudeJson(
+      extractText(response),
+    )
+
+  const allowed = [
+    'STAT 340',
+    'MATH 340',
+    'LIS 462',
+    'COMP SCI 320',
+  ]
+
+  const course =
+    String(
+      parsed?.course || '',
+    ).trim()
+
+  if (
+    allowed.includes(course) &&
+    Number(parsed?.confidence || 0) >= 6
+  ) {
+    return course
+  }
+
+  return null
+}
+
+// ==================================================
 // G2 SESSION
 // ==================================================
 
-wss.on(
-  'connection',
-  g2Socket => {
-    console.log(
-      '\n==============================',
-    )
+wss.on('connection', g2Socket => {
+  console.log(
+    '\n==============================',
+  )
 
-    console.log(
-      'NEW G2 SESSION',
-    )
+  console.log('NEW G2 SESSION')
 
-    console.log(
-      '==============================\n',
-    )
+  console.log(
+    '==============================\n',
+  )
 
-    let conversation = []
-    let recentCards = []
+  let conversation = []
+  let recentCards = []
 
-    let mode = 'SALES'
+  let mode = 'SALES'
 
-    let analyzing = false
+  let analyzing = false
 
-    let transcriptRevision = 0
-    let analyzedRevision = 0
+  let transcriptRevision = 0
+  let analyzedRevision = 0
 
-    let lastCardAt = 0
+  let lastCardAt = 0
 
-    let manualAskActive =
-      false
+  let manualAskActive = false
+  let manualAskBuffer = []
+  let manualAskTimer = null
 
-    let manualAskBuffer =
-      []
+  // ==================================================
+  // NOTES STATE
+  // ==================================================
 
-    let manualAskTimer =
-      null
+  let noteTaking = false
+  let noteTranscript = []
+  let noteStartedAt = null
 
-    // ==================================================
-    // NOTES STATE
-    // ==================================================
+  const CARD_COOLDOWN_MS = 12000
+  const MIN_RELEVANCE = 7
+  const MAX_CONVERSATION_ITEMS = 50
 
-    let noteTaking = false
-    let noteTranscript = []
-    let noteStartedAt = null
+  // ==================================================
+  // DEEPGRAM
+  // ==================================================
 
-    const CARD_COOLDOWN_MS =
-      12000
+  const params =
+    new URLSearchParams({
+      model: 'nova-3',
+      encoding: 'linear16',
+      sample_rate: '16000',
+      channels: '1',
+      interim_results: 'true',
+      smart_format: 'true',
+      endpointing: '300',
+    })
 
-    const MIN_RELEVANCE =
-      7
-
-    const MAX_CONVERSATION_ITEMS =
-      50
-
-    // ==================================================
-    // DEEPGRAM
-    // ==================================================
-
-    const params =
-      new URLSearchParams({
-        model: 'nova-3',
-        encoding:
-          'linear16',
-        sample_rate:
-          '16000',
-        channels: '1',
-        interim_results:
-          'true',
-        smart_format:
-          'true',
-        endpointing:
-          '300',
-      })
-
-    const deepgramSocket =
-      new WebSocket(
-        `wss://api.deepgram.com/v1/listen?${params.toString()}`,
-        {
-          headers: {
-            Authorization:
-              `Token ${process.env.DEEPGRAM_API_KEY}`,
-          },
+  const deepgramSocket =
+    new WebSocket(
+      `wss://api.deepgram.com/v1/listen?${params.toString()}`,
+      {
+        headers: {
+          Authorization:
+            `Token ${process.env.DEEPGRAM_API_KEY}`,
         },
-      )
-
-    deepgramSocket.on(
-      'open',
-      () => {
-        console.log(
-          'Deepgram connected',
-        )
       },
     )
 
-    // ==================================================
-    // NOTES
-    // ==================================================
+  deepgramSocket.on(
+    'open',
+    () => {
+      console.log(
+        'Deepgram connected',
+      )
+    },
+  )
 
-    async function generateNotes() {
-      if (
-        noteTranscript.length ===
-        0
-      ) {
-        console.log(
-          'No note transcript captured',
+  // ==================================================
+  // NOTES ROUTING
+  // ==================================================
+
+  async function determineNoteRoute(
+    transcript,
+  ) {
+    if (mode === 'SCHOOL') {
+      const course =
+        await classifySchoolCourse(
+          transcript,
         )
 
-        if (
-          g2Socket.readyState ===
-          WebSocket.OPEN
-        ) {
-          g2Socket.send(
-            JSON.stringify({
-              type:
-                'notes_error',
+      return {
+        area: 'SCHOOL',
+        course,
+      }
+    }
 
-              text:
-                'No speech was captured.',
-            }),
-          )
-        }
+    if (
+      mode === 'SALES' ||
+      mode === 'MEETING'
+    ) {
+      return {
+        area: 'WORK',
+        course: null,
+      }
+    }
 
-        return
+    return {
+      area: 'GENERAL',
+      course: null,
+    }
+  }
+
+  // ==================================================
+  // NOTE GENERATION
+  // ==================================================
+
+  async function generateNotes() {
+    if (
+      noteTranscript.length ===
+      0
+    ) {
+      console.log(
+        'No note transcript captured',
+      )
+
+      if (
+        g2Socket.readyState ===
+        WebSocket.OPEN
+      ) {
+        g2Socket.send(
+          JSON.stringify({
+            type: 'notes_error',
+            text:
+              'No speech was captured.',
+          }),
+        )
       }
 
-      const transcript =
-        noteTranscript.join(
-          '\n',
+      return
+    }
+
+    const transcript =
+      noteTranscript.join('\n')
+
+    console.log(
+      'Generating notes from',
+      noteTranscript.length,
+      'segments',
+    )
+
+    try {
+      // ----------------------------------------------
+      // 1. Determine folder
+      // ----------------------------------------------
+
+      const route =
+        await determineNoteRoute(
+          transcript,
         )
 
       console.log(
-        'Generating notes from',
-        noteTranscript.length,
-        'transcript segments',
+        'NOTE ROUTE:',
+        route,
       )
+
+      // ----------------------------------------------
+      // 2. Generate polished AI notes
+      // ----------------------------------------------
 
       const response =
         await anthropic.messages.create({
-          model:
-            'claude-sonnet-5',
+          model: 'claude-sonnet-5',
 
-          max_tokens:
-            3000,
+          max_tokens: 5000,
 
           system: `
-You turn a raw transcript into excellent structured notes.
+You are an expert professional AI note taker.
+
+Turn the transcript into polished notes that are substantially more useful than a raw transcript.
 
 CURRENT MODE:
 ${mode}
 
-The notes must be easy to understand later even if the user was not taking notes during the original conversation.
+GENERAL RULES:
 
-SCHOOL MODE:
+- Remove filler, false starts and repetition.
+- Preserve important details.
+- Organize by topic, not transcript order.
+- Use clear headings and bullet points.
+- Explain jargon when helpful.
+- Never invent facts, dates, owners, statements or formulas.
+- If something is uncertain, explicitly label it unclear.
+- Do not include the entire raw transcript unless it materially improves the notes.
 
-Prioritize:
-- lecture topic
-- summary
-- main concepts
-- definitions
-- formulas
-- examples
-- professor emphasis
-- likely testable material
-- confusing points
-- study questions
-- key takeaways
+==================================================
+SCHOOL MODE
+==================================================
 
-MEETING MODE:
+Create excellent university study notes.
 
-Prioritize:
-- executive summary
-- discussion topics
-- decisions
-- action items
-- owners
-- deadlines
-- risks
-- unresolved questions
-- follow-ups
-- key takeaways
+Include when relevant:
 
-SALES MODE:
+- Overview
+- Main concepts
+- Definitions
+- Formulas / equations
+- What each variable means
+- Step-by-step explanations
+- Examples from the lecture
+- Professor emphasis
+- Likely testable material
+- Common mistakes
+- Questions / confusing points
+- Key takeaways
 
-Prioritize:
-- customer/account
-- executive summary
-- customer situation
-- pain points
-- buying signals
-- opportunities
-- objections
-- competitors
-- decision makers
-- budget
-- timeline
-- action items
-- next steps
-- follow-up questions
+==================================================
+MEETING MODE
+==================================================
 
-GENERAL MODE:
+Include when relevant:
 
-Create clean general-purpose notes organized by topic.
+- Executive summary
+- Main discussion
+- Decisions
+- Action items
+- Owners
+- Deadlines
+- Risks / blockers
+- Open questions
+- Follow-ups
+- Key takeaways
 
-IMPORTANT:
+Never invent an owner or deadline.
 
-Remove filler and repetition.
+==================================================
+SALES MODE
+==================================================
 
-Organize by meaning rather than simply repeating the transcript chronologically.
+Include when relevant:
 
-Never invent facts.
+- Executive summary
+- Customer situation
+- Business problems
+- Technical environment
+- Pain points
+- Buying signals
+- Opportunities
+- Budget
+- Timeline
+- Decision makers
+- Current vendors
+- Competitors
+- Objections
+- Risks
+- Action items
+- Next best actions
+- Follow-up questions
+
+==================================================
+GENERAL MODE
+==================================================
+
+Create clean, useful notes organized around the important ideas discussed.
+
+==================================================
+MANDATORY ENDING FOR EVERY NOTE
+==================================================
+
+EVERY NOTE MUST END WITH:
+
+AI SUMMARY & EXPLANATION
+
+This section is mandatory regardless of mode.
+
+It should contain:
+
+1. Plain-English Summary
+Explain the entire session simply and concisely.
+
+2. What This Really Means
+Explain the key ideas in more understandable language.
+
+3. Most Important Things to Remember
+Give 3-8 high-value takeaways.
+
+4. Connections
+Explain useful relationships between ideas discussed.
+
+For SCHOOL mode also include:
+
+5. How to Study This
+Give concise advice for understanding or reviewing the material.
+
+For SALES or MEETING mode also include:
+
+5. What I Would Do Next
+Give practical next actions based only on the conversation.
+
+==================================================
 
 Return ONLY valid JSON:
 
 {
   "title": "Short descriptive title",
   "summary": "2-4 sentence summary",
-  "markdown": "# Title\\n\\n## Summary\\n..."
+  "html": "<h1>...</h1>..."
 }
 
-Do not use markdown fences around the JSON.
+The HTML will be converted directly into a Google Doc.
+
+Use clean HTML:
+<h1>
+<h2>
+<h3>
+<p>
+<ul>
+<ol>
+<li>
+<strong>
+<em>
+<table>
+<tr>
+<th>
+<td>
+
+Do NOT include:
+<html>
+<head>
+<body>
+script
+style
+
+Do not put JSON inside markdown fences.
 `,
 
           messages: [
@@ -627,84 +918,127 @@ ${transcript}
           ],
         })
 
-      const raw =
-        extractText(
-          response,
-        )
-
       const parsed =
         parseClaudeJson(
-          raw,
+          extractText(response),
         )
 
       if (
-        !parsed?.markdown
+        !parsed?.html ||
+        !parsed?.title
       ) {
-        console.error(
-          'Could not generate notes:',
-          raw,
+        throw new Error(
+          'Claude did not return valid note HTML.',
         )
-
-        if (
-          g2Socket.readyState ===
-          WebSocket.OPEN
-        ) {
-          g2Socket.send(
-            JSON.stringify({
-              type:
-                'notes_error',
-
-              text:
-                'Could not generate notes.',
-            }),
-          )
-        }
-
-        return
       }
 
       const title =
         String(
-          parsed.title ||
-            'G2 Notes',
+          parsed.title,
         ).trim()
 
-      const timestamp =
+      const summary =
+        String(
+          parsed.summary || '',
+        ).trim()
+
+      const datePrefix =
         new Date()
           .toISOString()
-          .replace(
-            /[:.]/g,
-            '-',
-          )
+          .slice(0, 10)
 
-      const filename =
-        `${timestamp}-${safeFilename(title)}.md`
+      const documentTitle =
+        `${datePrefix} — ${title}`
 
-      const filepath =
-        path.join(
-          NOTES_DIR,
-          filename,
+      // ----------------------------------------------
+      // 3. Find exact Google Drive folder
+      // ----------------------------------------------
+
+      const destination =
+        await getDriveFolderPath(
+          route,
         )
 
-      fs.writeFileSync(
-        filepath,
-        parsed.markdown,
-        'utf8',
+      console.log(
+        'GOOGLE DRIVE DESTINATION:',
+        destination.path,
+      )
+
+      // ----------------------------------------------
+      // 4. Add document metadata heading
+      // ----------------------------------------------
+
+      const metadataHtml = `
+        <p>
+          <strong>Mode:</strong> ${htmlEscape(mode)}
+          <br>
+          <strong>Date:</strong> ${htmlEscape(datePrefix)}
+          ${
+            route.course
+              ? `<br><strong>Course:</strong> ${htmlEscape(route.course)}`
+              : ''
+          }
+        </p>
+        <hr>
+      `
+
+      const completeHtml =
+        metadataHtml +
+        String(parsed.html)
+
+      // ----------------------------------------------
+      // 5. Create native Google Doc
+      // ----------------------------------------------
+
+      const googleDoc =
+        await createGoogleDoc({
+          title: documentTitle,
+          html: completeHtml,
+          folderId:
+            destination.folderId,
+        })
+
+      console.log(
+        'GOOGLE DOC SAVED:',
+        googleDoc.name,
       )
 
       console.log(
-        'LOCAL NOTES SAVED:',
-        filepath,
+        'GOOGLE DOC ID:',
+        googleDoc.id,
       )
 
       console.log(
-        'NOTE TITLE:',
-        title,
+        'GOOGLE DOC URL:',
+        googleDoc.webViewLink,
       )
 
-      // Google Drive upload comes next.
-      // For this step we are only authorizing
-      // Google and keeping local saving working.
+      // ----------------------------------------------
+      // 6. Local backup
+      // ----------------------------------------------
+
+      try {
+        const localFile =
+          `${Date.now()}-${safeFilename(title)}.html`
+
+        fs.writeFileSync(
+          path.join(
+            NOTES_DIR,
+            localFile,
+          ),
+          completeHtml,
+          'utf8',
+        )
+      } catch (error) {
+        console.log(
+          'Local backup failed:',
+          error.message,
+        )
+      }
+
+      // ----------------------------------------------
+      // 7. Tell G2
+      // ----------------------------------------------
 
       if (
         g2Socket.readyState ===
@@ -712,36 +1046,21 @@ ${transcript}
       ) {
         g2Socket.send(
           JSON.stringify({
-            type:
-              'notes_saved',
-
+            type: 'notes_saved',
             title,
-
-            filename,
-
-            summary:
-              parsed.summary ||
+            summary,
+            folder:
+              destination.path,
+            url:
+              googleDoc.webViewLink ||
               '',
           }),
         )
       }
-    }
-
-    function startNotes() {
-      if (noteTaking) {
-        return
-      }
-
-      noteTaking = true
-
-      noteTranscript = []
-
-      noteStartedAt =
-        new Date()
-
-      console.log(
-        'NOTE TAKING STARTED:',
-        noteStartedAt.toISOString(),
+    } catch (error) {
+      console.error(
+        'NOTE GENERATION/SAVE ERROR:',
+        error,
       )
 
       if (
@@ -750,71 +1069,96 @@ ${transcript}
       ) {
         g2Socket.send(
           JSON.stringify({
-            type:
-              'notes_started',
+            type: 'notes_error',
+            text:
+              'Could not save notes to Google Drive.',
           }),
         )
       }
     }
+  }
 
-    async function stopNotes() {
-      if (!noteTaking) {
-        return
-      }
-
-      noteTaking = false
-
-      console.log(
-        'NOTE TAKING STOPPED',
-      )
-
-      if (
-        g2Socket.readyState ===
-        WebSocket.OPEN
-      ) {
-        g2Socket.send(
-          JSON.stringify({
-            type:
-              'notes_processing',
-          }),
-        )
-      }
-
-      await generateNotes()
-
-      noteTranscript = []
-
-      noteStartedAt =
-        null
+  function startNotes() {
+    if (noteTaking) {
+      return
     }
 
-    // ==================================================
-    // COMPANY DETECTION
-    // ==================================================
+    noteTaking = true
+    noteTranscript = []
+    noteStartedAt =
+      new Date()
 
-    async function detectCompany(
-      context,
+    console.log(
+      'NOTE TAKING STARTED:',
+      noteStartedAt.toISOString(),
+    )
+
+    if (
+      g2Socket.readyState ===
+      WebSocket.OPEN
     ) {
-      const response =
-        await anthropic.messages.create({
-          model:
-            'claude-sonnet-5',
+      g2Socket.send(
+        JSON.stringify({
+          type: 'notes_started',
+        }),
+      )
+    }
+  }
 
-          max_tokens: 180,
+  async function stopNotes() {
+    if (!noteTaking) {
+      return
+    }
 
-          system: `
+    noteTaking = false
+
+    console.log(
+      'NOTE TAKING STOPPED',
+    )
+
+    if (
+      g2Socket.readyState ===
+      WebSocket.OPEN
+    ) {
+      g2Socket.send(
+        JSON.stringify({
+          type: 'notes_processing',
+        }),
+      )
+    }
+
+    await generateNotes()
+
+    noteTranscript = []
+    noteStartedAt = null
+  }
+
+  // ==================================================
+  // COMPANY DETECTION
+  // ==================================================
+
+  async function detectCompany(
+    context,
+  ) {
+    const response =
+      await anthropic.messages.create({
+        model: 'claude-sonnet-5',
+
+        max_tokens: 180,
+
+        system: `
 Identify the company or organization most relevant to the CURRENT conversation.
 
 Return ONLY valid JSON.
 
-If there is no clear company:
+No company:
 
 {
   "company": "",
   "confidence": 0
 }
 
-If there is:
+Company:
 
 {
   "company": "Company Name",
@@ -824,119 +1168,97 @@ If there is:
 No markdown.
 `,
 
-          messages: [
-            {
-              role: 'user',
-              content:
-                context,
-            },
-          ],
-        })
-
-      const parsed =
-        parseClaudeJson(
-          extractText(
-            response,
-          ),
-        )
-
-      if (!parsed) {
-        return {
-          company: '',
-          confidence: 0,
-        }
-      }
-
-      return {
-        company:
-          String(
-            parsed.company ||
-              '',
-          ).trim(),
-
-        confidence:
-          Number(
-            parsed.confidence ||
-              0,
-          ),
-      }
-    }
-
-    // ==================================================
-    // ACCOUNT RESEARCH
-    // ==================================================
-
-    function accountCacheFresh(
-      account,
-    ) {
-      if (
-        !account?.researchedAt
-      ) {
-        return false
-      }
-
-      const researchedAt =
-        new Date(
-          account.researchedAt,
-        ).getTime()
-
-      return (
-        Date.now() -
-          researchedAt <
-        ACCOUNT_CACHE_MAX_AGE_MS
-      )
-    }
-
-    async function researchAccount(
-      company,
-    ) {
-      console.log(
-        'Researching account:',
-        company,
-      )
-
-      const query =
-        `${company} latest news executives AI cloud cybersecurity strategy partnerships acquisitions 2026`
-
-      const result =
-        await tvly.search(
-          query,
+        messages: [
           {
-            searchDepth:
-              'basic',
-
-            maxResults:
-              5,
-
-            includeAnswer:
-              true,
+            role: 'user',
+            content: context,
           },
-        )
+        ],
+      })
 
-      const resultText =
-        (
-          result.results ||
-          []
-        )
-          .slice(0, 5)
-          .map(
-            (
-              item,
-              index,
-            ) =>
-              [
-                `SOURCE ${index + 1}`,
-                `Title: ${item.title || ''}`,
-                `Content: ${item.content || ''}`,
-              ].join(
-                '\n',
-              ),
-          )
-          .join(
-            '\n\n',
-          )
+    const parsed =
+      parseClaudeJson(
+        extractText(response),
+      )
 
-      const research = `
+    if (!parsed) {
+      return {
+        company: '',
+        confidence: 0,
+      }
+    }
+
+    return {
+      company:
+        String(
+          parsed.company || '',
+        ).trim(),
+
+      confidence:
+        Number(
+          parsed.confidence || 0,
+        ),
+    }
+  }
+
+  // ==================================================
+  // ACCOUNT RESEARCH
+  // ==================================================
+
+  function accountCacheFresh(
+    account,
+  ) {
+    if (!account?.researchedAt) {
+      return false
+    }
+
+    const researchedAt =
+      new Date(
+        account.researchedAt,
+      ).getTime()
+
+    return (
+      Date.now() -
+        researchedAt <
+      ACCOUNT_CACHE_MAX_AGE_MS
+    )
+  }
+
+  async function researchAccount(
+    company,
+  ) {
+    console.log(
+      'Researching account:',
+      company,
+    )
+
+    const query =
+      `${company} latest news executives AI cloud cybersecurity strategy partnerships acquisitions 2026`
+
+    const result =
+      await tvly.search(
+        query,
+        {
+          searchDepth: 'basic',
+          maxResults: 5,
+          includeAnswer: true,
+        },
+      )
+
+    const resultText =
+      (result.results || [])
+        .slice(0, 5)
+        .map(
+          (item, index) =>
+            [
+              `SOURCE ${index + 1}`,
+              `Title: ${item.title || ''}`,
+              `Content: ${item.content || ''}`,
+            ].join('\n'),
+        )
+        .join('\n\n')
+
+    const research = `
 ACCOUNT:
 ${company}
 
@@ -947,99 +1269,84 @@ SOURCES:
 ${resultText}
 `
 
-      persistentMemory
-        .accounts[
-          company.toLowerCase()
-        ] = {
-        company,
-
-        researchedAt:
-          new Date()
-            .toISOString(),
-
-        research,
-      }
-
-      saveMemory()
-
-      return research
-    }
-
-    async function getAccountIntel(
+    persistentMemory.accounts[
+      company.toLowerCase()
+    ] = {
       company,
-    ) {
-      if (!company) {
-        return 'No account intelligence.'
-      }
 
-      const key =
-        company.toLowerCase()
+      researchedAt:
+        new Date()
+          .toISOString(),
 
-      const cached =
-        persistentMemory
-          .accounts[
-            key
-          ]
-
-      if (
-        cached &&
-        accountCacheFresh(
-          cached,
-        )
-      ) {
-        return cached.research
-      }
-
-      try {
-        return await researchAccount(
-          company,
-        )
-      } catch (error) {
-        console.error(
-          'Research error:',
-          error,
-        )
-
-        return (
-          cached?.research ||
-          'No account intelligence.'
-        )
-      }
+      research,
     }
 
-    // ==================================================
-    // MODE PROMPTS
-    // ==================================================
+    saveMemory()
 
-    function modeInstructions() {
-      if (
-        mode === 'GENERAL'
-      ) {
-        return `
+    return research
+  }
+
+  async function getAccountIntel(
+    company,
+  ) {
+    if (!company) {
+      return 'No account intelligence.'
+    }
+
+    const key =
+      company.toLowerCase()
+
+    const cached =
+      persistentMemory.accounts[
+        key
+      ]
+
+    if (
+      cached &&
+      accountCacheFresh(cached)
+    ) {
+      return cached.research
+    }
+
+    try {
+      return await researchAccount(
+        company,
+      )
+    } catch {
+      return (
+        cached?.research ||
+        'No account intelligence.'
+      )
+    }
+  }
+
+  // ==================================================
+  // MODE PROMPTS
+  // ==================================================
+
+  function modeInstructions() {
+    if (mode === 'GENERAL') {
+      return `
 GENERAL MODE:
 Surface useful facts, context, explanations, corrections and helpful responses.
 `
-      }
+    }
 
-      if (
-        mode === 'MEETING'
-      ) {
-        return `
+    if (mode === 'MEETING') {
+      return `
 MEETING MODE:
 Prioritize decisions, commitments, risks, unresolved questions, owners and next steps.
 `
-      }
+    }
 
-      if (
-        mode === 'SCHOOL'
-      ) {
-        return `
+    if (mode === 'SCHOOL') {
+      return `
 SCHOOL MODE:
 Prioritize concepts, explanations, definitions, examples and useful questions.
 `
-      }
+    }
 
-      return `
+    return `
 SALES MODE:
 
 Act as an elite technology account executive copilot.
@@ -1062,54 +1369,50 @@ Prioritize:
 - competitors
 - next-best actions
 `
-    }
+  }
 
-    // ==================================================
-    // CARD GENERATION
-    // ==================================================
+  // ==================================================
+  // CARD GENERATION
+  // ==================================================
 
-    async function generateCard(
-      context,
-      company,
-      accountContext,
-    ) {
-      const priorCards =
-        recentCards.length
-          ? recentCards
-              .slice(-6)
-              .map(card => {
-                if (
-                  card.type ===
-                  'QUESTIONS'
-                ) {
-                  return (
-                    'QUESTIONS: ' +
-                    (
-                      card.questions ||
-                      []
-                    ).join(
-                      ' | ',
-                    )
-                  )
-                }
-
+  async function generateCard(
+    context,
+    company,
+    accountContext,
+  ) {
+    const priorCards =
+      recentCards.length
+        ? recentCards
+            .slice(-6)
+            .map(card => {
+              if (
+                card.type ===
+                'QUESTIONS'
+              ) {
                 return (
-                  `${card.type}: ` +
-                  `${card.body || ''}`
+                  'QUESTIONS: ' +
+                  (
+                    card.questions ||
+                    []
+                  ).join(' | ')
                 )
-              })
-              .join('\n')
-          : 'None'
+              }
 
-      const response =
-        await anthropic.messages.create({
-          model:
-            'claude-sonnet-5',
+              return (
+                `${card.type}: ` +
+                `${card.body || ''}`
+              )
+            })
+            .join('\n')
+        : 'None'
 
-          max_tokens:
-            450,
+    const response =
+      await anthropic.messages.create({
+        model: 'claude-sonnet-5',
 
-          system: `
+        max_tokens: 450,
+
+        system: `
 You are a proactive smart-glasses copilot.
 
 ${modeInstructions()}
@@ -1161,11 +1464,11 @@ Avoid repeating cards already shown.
 Return ONLY valid JSON.
 `,
 
-          messages: [
-            {
-              role: 'user',
+        messages: [
+          {
+            role: 'user',
 
-              content: `
+            content: `
 CONVERSATION:
 
 ${context}
@@ -1182,289 +1485,241 @@ RECENT CARDS:
 
 ${priorCards}
 `,
-            },
-          ],
-        })
+          },
+        ],
+      })
 
-      return parseClaudeJson(
-        extractText(
-          response,
-        ),
-      )
+    return parseClaudeJson(
+      extractText(response),
+    )
+  }
+
+  // ==================================================
+  // ANALYSIS LOOP
+  // ==================================================
+
+  async function runAnalysisLoop() {
+    if (
+      analyzing ||
+      manualAskActive
+    ) {
+      return
     }
 
-    // ==================================================
-    // ANALYSIS LOOP
-    // ==================================================
+    analyzing = true
 
-    async function runAnalysisLoop() {
-      if (
-        analyzing ||
-        manualAskActive
+    try {
+      while (
+        analyzedRevision <
+        transcriptRevision
       ) {
-        return
-      }
-
-      analyzing = true
-
-      try {
-        while (
-          analyzedRevision <
+        const targetRevision =
           transcriptRevision
-        ) {
-          const targetRevision =
-            transcriptRevision
 
-          const context =
-            conversation.join(
-              '\n',
+        const context =
+          conversation.join('\n')
+
+        try {
+          const companyResult =
+            await detectCompany(
+              context,
             )
 
-          try {
-            const companyResult =
-              await detectCompany(
-                context,
-              )
+          let accountContext =
+            'No account intelligence.'
 
-            let accountContext =
-              'No account intelligence.'
-
-            if (
-              companyResult.company &&
-              companyResult.confidence >=
-                7
-            ) {
-              accountContext =
-                await getAccountIntel(
-                  companyResult.company,
-                )
-            }
-
-            const card =
-              await generateCard(
-                context,
+          if (
+            companyResult.company &&
+            companyResult.confidence >=
+              7
+          ) {
+            accountContext =
+              await getAccountIntel(
                 companyResult.company,
-                accountContext,
               )
-
-            if (!card) {
-              console.log(
-                'CARD REJECTED: parse failure',
-              )
-
-              analyzedRevision =
-                targetRevision
-
-              continue
-            }
-
-            const type =
-              String(
-                card.type ||
-                  'NO_INSIGHT',
-              ).trim()
-
-            let relevance =
-              Number(
-                card.relevance,
-              )
-
-            if (
-              !Number.isFinite(
-                relevance,
-              ) &&
-              type !==
-                'NO_INSIGHT'
-            ) {
-              relevance =
-                MIN_RELEVANCE
-            }
-
-            if (
-              type ===
-              'NO_INSIGHT'
-            ) {
-              console.log(
-                'CARD REJECTED: NO_INSIGHT',
-              )
-
-              analyzedRevision =
-                targetRevision
-
-              continue
-            }
-
-            if (
-              relevance <
-              MIN_RELEVANCE
-            ) {
-              console.log(
-                'CARD REJECTED: low relevance',
-                relevance,
-              )
-
-              analyzedRevision =
-                targetRevision
-
-              continue
-            }
-
-            if (
-              Date.now() -
-                lastCardAt <
-              CARD_COOLDOWN_MS
-            ) {
-              console.log(
-                'CARD REJECTED: cooldown',
-              )
-
-              analyzedRevision =
-                targetRevision
-
-              continue
-            }
-
-            let outgoingCard =
-              null
-
-            if (
-              type ===
-              'QUESTIONS'
-            ) {
-              const questions =
-                Array.isArray(
-                  card.questions,
-                )
-                  ? card.questions
-                      .map(
-                        question =>
-                          String(
-                            question,
-                          ).trim(),
-                      )
-                      .filter(
-                        Boolean,
-                      )
-                      .slice(
-                        0,
-                        3,
-                      )
-                  : []
-
-              if (
-                questions.length >=
-                2
-              ) {
-                outgoingCard = {
-                  type,
-                  relevance,
-
-                  company:
-                    companyResult.company,
-
-                  questions,
-                }
-              }
-            } else if (
-              type ===
-                'SAY_THIS' ||
-              type ===
-                'KNOW_THIS'
-            ) {
-              const body =
-                String(
-                  card.body ||
-                    '',
-                ).trim()
-
-              if (body) {
-                outgoingCard = {
-                  type,
-                  relevance,
-
-                  company:
-                    companyResult.company,
-
-                  body,
-                }
-              }
-            }
-
-            if (
-              outgoingCard &&
-              g2Socket.readyState ===
-                WebSocket.OPEN
-            ) {
-              g2Socket.send(
-                JSON.stringify({
-                  type:
-                    'card',
-
-                  card:
-                    outgoingCard,
-                }),
-              )
-
-              recentCards.push(
-                outgoingCard,
-              )
-
-              if (
-                recentCards.length >
-                14
-              ) {
-                recentCards =
-                  recentCards.slice(
-                    -14,
-                  )
-              }
-
-              lastCardAt =
-                Date.now()
-
-              console.log(
-                'CARD SENT TO G2:',
-                JSON.stringify(
-                  outgoingCard,
-                ),
-              )
-            }
-          } catch (error) {
-            console.error(
-              'Analysis error:',
-              error,
-            )
           }
 
-          analyzedRevision =
-            targetRevision
+          const card =
+            await generateCard(
+              context,
+              companyResult.company,
+              accountContext,
+            )
+
+          if (!card) {
+            analyzedRevision =
+              targetRevision
+
+            continue
+          }
+
+          const type =
+            String(
+              card.type ||
+                'NO_INSIGHT',
+            ).trim()
+
+          let relevance =
+            Number(
+              card.relevance,
+            )
+
+          if (
+            !Number.isFinite(
+              relevance,
+            ) &&
+            type !==
+              'NO_INSIGHT'
+          ) {
+            relevance =
+              MIN_RELEVANCE
+          }
+
+          if (
+            type ===
+              'NO_INSIGHT' ||
+            relevance <
+              MIN_RELEVANCE
+          ) {
+            analyzedRevision =
+              targetRevision
+
+            continue
+          }
+
+          if (
+            Date.now() -
+              lastCardAt <
+            CARD_COOLDOWN_MS
+          ) {
+            analyzedRevision =
+              targetRevision
+
+            continue
+          }
+
+          let outgoingCard = null
+
+          if (
+            type === 'QUESTIONS'
+          ) {
+            const questions =
+              Array.isArray(
+                card.questions,
+              )
+                ? card.questions
+                    .map(
+                      q =>
+                        String(q)
+                          .trim(),
+                    )
+                    .filter(Boolean)
+                    .slice(0, 3)
+                : []
+
+            if (
+              questions.length >= 2
+            ) {
+              outgoingCard = {
+                type,
+                relevance,
+
+                company:
+                  companyResult.company,
+
+                questions,
+              }
+            }
+          } else if (
+            type === 'SAY_THIS' ||
+            type === 'KNOW_THIS'
+          ) {
+            const body =
+              String(
+                card.body || '',
+              ).trim()
+
+            if (body) {
+              outgoingCard = {
+                type,
+                relevance,
+
+                company:
+                  companyResult.company,
+
+                body,
+              }
+            }
+          }
+
+          if (
+            outgoingCard &&
+            g2Socket.readyState ===
+              WebSocket.OPEN
+          ) {
+            g2Socket.send(
+              JSON.stringify({
+                type: 'card',
+                card:
+                  outgoingCard,
+              }),
+            )
+
+            recentCards.push(
+              outgoingCard,
+            )
+
+            if (
+              recentCards.length > 14
+            ) {
+              recentCards =
+                recentCards.slice(
+                  -14,
+                )
+            }
+
+            lastCardAt =
+              Date.now()
+
+            console.log(
+              'CARD SENT TO G2:',
+              outgoingCard.type,
+            )
+          }
+        } catch (error) {
+          console.error(
+            'Analysis error:',
+            error,
+          )
         }
-      } finally {
-        analyzing = false
+
+        analyzedRevision =
+          targetRevision
       }
+    } finally {
+      analyzing = false
     }
+  }
 
-    // ==================================================
-    // MANUAL ASK
-    // ==================================================
+  // ==================================================
+  // MANUAL ASK
+  // ==================================================
 
-    async function answerManualAsk(
+  async function answerManualAsk(
+    question,
+  ) {
+    console.log(
+      'MANUAL ASK:',
       question,
-    ) {
-      console.log(
-        'MANUAL ASK:',
-        question,
-      )
+    )
 
-      const response =
-        await anthropic.messages.create({
-          model:
-            'claude-sonnet-5',
+    const response =
+      await anthropic.messages.create({
+        model: 'claude-sonnet-5',
 
-          max_tokens:
-            350,
+        max_tokens: 350,
 
-          system: `
+        system: `
 Answer the user's direct smart-glasses question.
 
 ${modeInstructions()}
@@ -1474,11 +1729,11 @@ Maximum 55 words.
 Be direct and useful.
 `,
 
-          messages: [
-            {
-              role: 'user',
+        messages: [
+          {
+            role: 'user',
 
-              content: `
+            content: `
 CONVERSATION:
 
 ${conversation.join('\n')}
@@ -1487,393 +1742,338 @@ QUESTION:
 
 ${question}
 `,
-            },
-          ],
-        })
+          },
+        ],
+      })
 
-      const answer =
-        extractText(
-          response,
-        )
+    const answer =
+      extractText(response)
 
-      if (
-        answer &&
-        g2Socket.readyState ===
-          WebSocket.OPEN
-      ) {
-        g2Socket.send(
-          JSON.stringify({
-            type:
-              'manual_answer',
-
-            text:
-              answer,
-          }),
-        )
-
-        console.log(
-          'MANUAL ANSWER SENT',
-        )
-      }
-    }
-
-    function finishManualAsk() {
-      if (
-        !manualAskActive
-      ) {
-        return
-      }
-
-      if (
-        manualAskTimer
-      ) {
-        clearTimeout(
-          manualAskTimer,
-        )
-      }
-
-      const question =
-        manualAskBuffer
-          .join(' ')
-          .trim()
-
-      manualAskActive =
-        false
-
-      manualAskBuffer =
-        []
-
-      if (question) {
-        answerManualAsk(
-          question,
-        )
-      }
-    }
-
-    function scheduleManualAskFinish() {
-      if (
-        manualAskTimer
-      ) {
-        clearTimeout(
-          manualAskTimer,
-        )
-      }
-
-      manualAskTimer =
-        setTimeout(
-          finishManualAsk,
-          1400,
-        )
-    }
-
-    // ==================================================
-    // DEEPGRAM TRANSCRIPTS
-    // ==================================================
-
-    deepgramSocket.on(
-      'message',
-      data => {
-        try {
-          const message =
-            JSON.parse(
-              data.toString(),
-            )
-
-          const transcript =
-            message.channel
-              ?.alternatives?.[0]
-              ?.transcript
-
-          if (!transcript) {
-            return
-          }
-
-          console.log(
-            'TRANSCRIPT:',
-            transcript,
-          )
-
-          if (
-            !message.is_final
-          ) {
-            return
-          }
-
-          // Notes capture independently
-          if (noteTaking) {
-            noteTranscript.push(
-              transcript,
-            )
-
-            console.log(
-              'NOTE CAPTURE:',
-              transcript,
-            )
-          }
-
-          if (
-            manualAskActive
-          ) {
-            manualAskBuffer.push(
-              transcript,
-            )
-
-            scheduleManualAskFinish()
-
-            return
-          }
-
-          conversation.push(
-            transcript,
-          )
-
-          if (
-            conversation.length >
-            MAX_CONVERSATION_ITEMS
-          ) {
-            conversation =
-              conversation.slice(
-                -MAX_CONVERSATION_ITEMS,
-              )
-          }
-
-          transcriptRevision +=
-            1
-
-          runAnalysisLoop()
-        } catch (error) {
-          console.error(
-            'Deepgram message error:',
-            error,
-          )
-        }
-      },
-    )
-
-    // ==================================================
-    // CONTROL MESSAGES
-    // ==================================================
-
-    function handleControlMessage(
-      payload,
+    if (
+      answer &&
+      g2Socket.readyState ===
+        WebSocket.OPEN
     ) {
-      if (
-        payload.type ===
-        'set_mode'
-      ) {
-        const requested =
-          String(
-            payload.mode ||
-              '',
-          ).toUpperCase()
+      g2Socket.send(
+        JSON.stringify({
+          type:
+            'manual_answer',
 
-        const allowed = [
-          'SALES',
-          'GENERAL',
-          'MEETING',
-          'SCHOOL',
-        ]
+          text: answer,
+        }),
+      )
+    }
+  }
 
-        if (
-          allowed.includes(
-            requested,
-          )
-        ) {
-          mode =
-            requested
-
-          console.log(
-            'MODE:',
-            mode,
-          )
-
-          g2Socket.send(
-            JSON.stringify({
-              type:
-                'mode_changed',
-
-              mode,
-            }),
-          )
-        }
-
-        return
-      }
-
-      if (
-        payload.type ===
-        'manual_ask_start'
-      ) {
-        manualAskActive =
-          true
-
-        manualAskBuffer =
-          []
-
-        console.log(
-          'MANUAL ASK STARTED',
-        )
-
-        return
-      }
-
-      if (
-        payload.type ===
-        'manual_ask_cancel'
-      ) {
-        manualAskActive =
-          false
-
-        manualAskBuffer =
-          []
-
-        console.log(
-          'MANUAL ASK CANCELLED',
-        )
-
-        return
-      }
-
-      if (
-        payload.type ===
-        'notes_start'
-      ) {
-        startNotes()
-
-        return
-      }
-
-      if (
-        payload.type ===
-        'notes_stop'
-      ) {
-        stopNotes()
-
-        return
-      }
+  function finishManualAsk() {
+    if (!manualAskActive) {
+      return
     }
 
-    // ==================================================
-    // G2 SOCKET
-    // ==================================================
+    if (manualAskTimer) {
+      clearTimeout(
+        manualAskTimer,
+      )
+    }
 
-    g2Socket.on(
-      'message',
-      data => {
-        if (
-          Buffer.isBuffer(
-            data,
+    const question =
+      manualAskBuffer
+        .join(' ')
+        .trim()
+
+    manualAskActive = false
+    manualAskBuffer = []
+
+    if (question) {
+      answerManualAsk(
+        question,
+      )
+    }
+  }
+
+  function scheduleManualAskFinish() {
+    if (manualAskTimer) {
+      clearTimeout(
+        manualAskTimer,
+      )
+    }
+
+    manualAskTimer =
+      setTimeout(
+        finishManualAsk,
+        1400,
+      )
+  }
+
+  // ==================================================
+  // TRANSCRIPT
+  // ==================================================
+
+  deepgramSocket.on(
+    'message',
+    data => {
+      try {
+        const message =
+          JSON.parse(
+            data.toString(),
           )
-        ) {
-          const maybeText =
-            data.toString(
-              'utf8',
-            )
 
-          if (
-            maybeText.startsWith(
-              '{',
-            )
-          ) {
-            try {
-              handleControlMessage(
-                JSON.parse(
-                  maybeText,
-                ),
-              )
+        const transcript =
+          message.channel
+            ?.alternatives?.[0]
+            ?.transcript
 
-              return
-            } catch {
-              // Continue as audio
-            }
-          }
+        if (!transcript) {
+          return
         }
 
-        if (
-          deepgramSocket.readyState ===
-          WebSocket.OPEN
-        ) {
-          deepgramSocket.send(
-            data,
-          )
-        }
-      },
-    )
-
-    // ==================================================
-    // CLEANUP
-    // ==================================================
-
-    g2Socket.on(
-      'close',
-      () => {
         console.log(
-          'G2 disconnected',
+          'TRANSCRIPT:',
+          transcript,
+        )
+
+        if (!message.is_final) {
+          return
+        }
+
+        // Notes recording continues independently
+        // from JARVIS/manual ask.
+        if (noteTaking) {
+          noteTranscript.push(
+            transcript,
+          )
+
+          console.log(
+            'NOTE CAPTURE:',
+            transcript,
+          )
+        }
+
+        if (manualAskActive) {
+          manualAskBuffer.push(
+            transcript,
+          )
+
+          scheduleManualAskFinish()
+
+          return
+        }
+
+        conversation.push(
+          transcript,
         )
 
         if (
-          noteTaking &&
-          noteTranscript.length >
-            0
+          conversation.length >
+          MAX_CONVERSATION_ITEMS
         ) {
-          noteTaking =
-            false
-
-          generateNotes()
-            .catch(
-              error =>
-                console.error(
-                  'Auto-save notes error:',
-                  error,
-                ),
+          conversation =
+            conversation.slice(
+              -MAX_CONVERSATION_ITEMS,
             )
         }
 
-        if (
-          manualAskTimer
-        ) {
-          clearTimeout(
-            manualAskTimer,
-          )
-        }
+        transcriptRevision += 1
 
-        if (
-          deepgramSocket.readyState ===
-            WebSocket.OPEN ||
-          deepgramSocket.readyState ===
-            WebSocket.CONNECTING
-        ) {
-          deepgramSocket.close()
-        }
-      },
-    )
-
-    deepgramSocket.on(
-      'error',
-      error => {
+        runAnalysisLoop()
+      } catch (error) {
         console.error(
           'Deepgram error:',
           error,
         )
-      },
-    )
-  },
-)
+      }
+    },
+  )
+
+  // ==================================================
+  // CONTROLS
+  // ==================================================
+
+  function handleControlMessage(
+    payload,
+  ) {
+    if (
+      payload.type ===
+      'set_mode'
+    ) {
+      const requested =
+        String(
+          payload.mode || '',
+        ).toUpperCase()
+
+      const allowed = [
+        'SALES',
+        'GENERAL',
+        'MEETING',
+        'SCHOOL',
+      ]
+
+      if (
+        allowed.includes(
+          requested,
+        )
+      ) {
+        mode = requested
+
+        console.log(
+          'MODE:',
+          mode,
+        )
+
+        g2Socket.send(
+          JSON.stringify({
+            type:
+              'mode_changed',
+            mode,
+          }),
+        )
+      }
+
+      return
+    }
+
+    if (
+      payload.type ===
+      'manual_ask_start'
+    ) {
+      manualAskActive = true
+      manualAskBuffer = []
+
+      return
+    }
+
+    if (
+      payload.type ===
+      'manual_ask_cancel'
+    ) {
+      manualAskActive = false
+      manualAskBuffer = []
+
+      return
+    }
+
+    if (
+      payload.type ===
+      'notes_start'
+    ) {
+      startNotes()
+      return
+    }
+
+    if (
+      payload.type ===
+      'notes_stop'
+    ) {
+      stopNotes()
+      return
+    }
+  }
+
+  // ==================================================
+  // G2 SOCKET
+  // ==================================================
+
+  g2Socket.on(
+    'message',
+    data => {
+      if (Buffer.isBuffer(data)) {
+        const maybeText =
+          data.toString('utf8')
+
+        if (
+          maybeText.startsWith('{')
+        ) {
+          try {
+            handleControlMessage(
+              JSON.parse(
+                maybeText,
+              ),
+            )
+
+            return
+          } catch {
+            // audio
+          }
+        }
+      }
+
+      if (
+        deepgramSocket.readyState ===
+        WebSocket.OPEN
+      ) {
+        deepgramSocket.send(
+          data,
+        )
+      }
+    },
+  )
+
+  // ==================================================
+  // CLEANUP
+  // ==================================================
+
+  g2Socket.on(
+    'close',
+    () => {
+      console.log(
+        'G2 disconnected',
+      )
+
+      // If you exit while note-taking is active,
+      // save whatever has already been captured.
+      if (
+        noteTaking &&
+        noteTranscript.length > 0
+      ) {
+        noteTaking = false
+
+        generateNotes()
+          .catch(
+            console.error,
+          )
+      }
+
+      if (manualAskTimer) {
+        clearTimeout(
+          manualAskTimer,
+        )
+      }
+
+      if (
+        deepgramSocket.readyState ===
+          WebSocket.OPEN ||
+        deepgramSocket.readyState ===
+          WebSocket.CONNECTING
+      ) {
+        deepgramSocket.close()
+      }
+    },
+  )
+
+  deepgramSocket.on(
+    'error',
+    error => {
+      console.error(
+        'Deepgram error:',
+        error,
+      )
+    },
+  )
+})
 
 // ==================================================
 // RAILWAY
 // ==================================================
 
 const PORT =
-  process.env.PORT ||
-  3001
+  process.env.PORT || 3001
 
 server.listen(
   PORT,
   '0.0.0.0',
   () => {
     console.log(
-      `G2 Copilot + Notes + Google running on port ${PORT}`,
+      `G2 Copilot + Drive Notes running on port ${PORT}`,
     )
   },
 )
