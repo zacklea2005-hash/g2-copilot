@@ -26,7 +26,6 @@ type Card = {
 
   relevance: number
 
-  company?: string
   body?: string
   questions?: string[]
 }
@@ -35,9 +34,6 @@ type Card = {
 // STATE
 // ==================================================
 
-let mode: Mode =
-  'SALES'
-
 const modes: Mode[] = [
   'SALES',
   'GENERAL',
@@ -45,19 +41,23 @@ const modes: Mode[] = [
   'SCHOOL',
 ]
 
+let mode: Mode =
+  'SALES'
+
 let modeIndex = 0
 
-let selectingMode =
-  true
+let selectingMode = true
+let choosingContext = false
+let speakingContext = false
 
-let manualAsk =
-  false
+let manualAsk = false
 
-const cards: Card[] =
-  []
+let notesActive = false
+let notesProcessing = false
 
-let cardIndex =
-  -1
+const cards: Card[] = []
+
+let cardIndex = -1
 
 // ==================================================
 // DISPLAY
@@ -74,15 +74,20 @@ const mainText =
     paddingLength: 8,
     containerID: 1,
     containerName: 'main',
+
     content:
       'G2 COPILOT\n\nStarting...',
+
     isEventCapture: 1,
   })
 
 await bridge.createStartUpPageContainer(
   new CreateStartUpPageContainer({
     containerTotalNum: 1,
-    textObject: [mainText],
+
+    textObject: [
+      mainText,
+    ],
   }),
 )
 
@@ -99,26 +104,49 @@ function updateHud(
 }
 
 // ==================================================
+// SOCKET
+// ==================================================
+
+const socket =
+  new WebSocket(
+    SERVER_URL,
+  )
+
+socket.binaryType =
+  'arraybuffer'
+
+function sendControl(
+  payload: object,
+) {
+  if (
+    socket.readyState ===
+    WebSocket.OPEN
+  ) {
+    socket.send(
+      JSON.stringify(
+        payload,
+      ),
+    )
+  }
+}
+
+// ==================================================
 // MODE MENU
 // ==================================================
 
 function showModeMenu() {
-  const current =
-    modes[modeIndex]
-
   updateHud(
     'SELECT MODE\n\n' +
-      `> ${current}\n\n` +
+      `> ${modes[modeIndex]}\n\n` +
       '↑ ↓ change\n' +
-      'Tap: start',
+      'Tap: select',
   )
 }
 
 function changeMode(
   direction: number,
 ) {
-  modeIndex +=
-    direction
+  modeIndex += direction
 
   if (
     modeIndex < 0
@@ -138,17 +166,73 @@ function changeMode(
 }
 
 // ==================================================
+// CONTEXT SETUP
+// ==================================================
+
+function showContextChoice() {
+  choosingContext = true
+
+  updateHud(
+    'ADD CONTEXT?\n\n' +
+      'Tap: speak context\n' +
+      '↓: skip\n\n' +
+      'Example:\n' +
+      '"STAT 340 regression"',
+  )
+}
+
+function startContextCapture() {
+  choosingContext = false
+  speakingContext = true
+
+  sendControl({
+    type:
+      'context_start',
+  })
+
+  updateHud(
+    'SET CONTEXT\n\n' +
+      'Speak now...\n\n' +
+      'Example:\n' +
+      '"ServiceNow AI meeting"',
+  )
+}
+
+function skipContext() {
+  choosingContext = false
+  speakingContext = false
+
+  sendControl({
+    type:
+      'context_skip',
+  })
+
+  listeningScreen()
+}
+
+// ==================================================
 // LISTENING
 // ==================================================
 
 function listeningScreen() {
+  const notes =
+    notesActive
+      ? 'NOTES: RECORDING'
+      : notesProcessing
+        ? 'NOTES: SAVING...'
+        : 'NOTES: OFF'
+
   updateHud(
-    `${mode} MODE\n\nListening...\n\nTap: ask me\n↑: last card`,
+    `${mode} MODE\n\n` +
+      `${notes}\n\n` +
+      'Tap: ask me\n' +
+      '↓: notes on/off\n' +
+      '↑: last card',
   )
 }
 
 // ==================================================
-// CARD RENDERING
+// CARDS
 // ==================================================
 
 function renderCard(
@@ -160,8 +244,7 @@ function renderCard(
   ) {
     return (
       'SAY THIS\n\n' +
-      (card.body ||
-        '') +
+      (card.body || '') +
       '\n\n↑ previous   ↓ next'
     )
   }
@@ -194,8 +277,7 @@ function renderCard(
 
   return (
     'KNOW THIS\n\n' +
-    (card.body ||
-      '') +
+    (card.body || '') +
     '\n\n↑ previous   ↓ next'
   )
 }
@@ -203,11 +285,9 @@ function renderCard(
 function showCurrentCard() {
   if (
     cardIndex < 0 ||
-    cards.length ===
-      0
+    cards.length === 0
   ) {
-    cardIndex =
-      -1
+    cardIndex = -1
 
     listeningScreen()
 
@@ -224,9 +304,7 @@ function showCurrentCard() {
 
   updateHud(
     renderCard(
-      cards[
-        cardIndex
-      ],
+      cards[cardIndex],
     ),
   )
 }
@@ -234,13 +312,10 @@ function showCurrentCard() {
 function addCard(
   card: Card,
 ) {
-  cards.push(
-    card,
-  )
+  cards.push(card)
 
   if (
-    cards.length >
-    12
+    cards.length > 15
   ) {
     cards.shift()
 
@@ -252,9 +327,10 @@ function addCard(
   }
 
   if (
-    cardIndex ===
-      -1 &&
-    !manualAsk
+    cardIndex === -1 &&
+    !manualAsk &&
+    !speakingContext &&
+    !choosingContext
   ) {
     cardIndex =
       cards.length - 1
@@ -263,33 +339,20 @@ function addCard(
   }
 }
 
-// ==================================================
-// CARD NAVIGATION
-// ==================================================
-
 function previousCard() {
   if (
-    cards.length ===
-    0
+    cards.length === 0
   ) {
     listeningScreen()
-
     return
   }
 
   if (
-    cardIndex ===
-    -1
+    cardIndex === -1
   ) {
     cardIndex =
       cards.length - 1
-
-    showCurrentCard()
-
-    return
-  }
-
-  if (
+  } else if (
     cardIndex > 0
   ) {
     cardIndex -= 1
@@ -300,23 +363,19 @@ function previousCard() {
 
 function nextCard() {
   if (
-    cards.length ===
-    0
+    cards.length === 0
   ) {
     listeningScreen()
-
     return
   }
 
   if (
-    cardIndex ===
-    -1
+    cardIndex === -1
   ) {
     cardIndex =
       cards.length - 1
 
     showCurrentCard()
-
     return
   }
 
@@ -327,27 +386,92 @@ function nextCard() {
     cardIndex += 1
 
     showCurrentCard()
-
     return
   }
 
-  cardIndex =
-    -1
+  cardIndex = -1
 
   listeningScreen()
 }
 
 // ==================================================
-// SOCKET
+// NOTES
 // ==================================================
 
-const socket =
-  new WebSocket(
-    SERVER_URL,
-  )
+function toggleNotes() {
+  if (
+    notesProcessing
+  ) {
+    return
+  }
 
-socket.binaryType =
-  'arraybuffer'
+  if (!notesActive) {
+    notesActive = true
+
+    sendControl({
+      type:
+        'notes_start',
+    })
+
+    updateHud(
+      'NOTES\n\nRecording started...',
+    )
+
+    setTimeout(
+      listeningScreen,
+      900,
+    )
+
+    return
+  }
+
+  notesActive = false
+  notesProcessing = true
+
+  sendControl({
+    type:
+      'notes_stop',
+  })
+
+  updateHud(
+    'NOTES\n\nGenerating notes...',
+  )
+}
+
+// ==================================================
+// MANUAL ASK
+// ==================================================
+
+function startManualAsk() {
+  manualAsk = true
+  cardIndex = -1
+
+  sendControl({
+    type:
+      'manual_ask_start',
+  })
+
+  updateHud(
+    'ASK ME\n\n' +
+      'Speak your question...\n\n' +
+      'Tap: cancel',
+  )
+}
+
+function cancelManualAsk() {
+  manualAsk = false
+
+  sendControl({
+    type:
+      'manual_ask_cancel',
+  })
+
+  listeningScreen()
+}
+
+// ==================================================
+// SERVER EVENTS
+// ==================================================
 
 socket.onopen =
   async () => {
@@ -360,9 +484,7 @@ socket.onopen =
         true,
       )
 
-    if (
-      !micStarted
-    ) {
+    if (!micStarted) {
       updateHud(
         'G2 COPILOT\n\nMicrophone failed.',
       )
@@ -381,6 +503,10 @@ socket.onmessage =
           event.data,
         )
 
+      // ------------------------------------------
+      // CARDS
+      // ------------------------------------------
+
       if (
         message.type ===
           'card' &&
@@ -393,12 +519,58 @@ socket.onmessage =
         return
       }
 
+      // ------------------------------------------
+      // CONTEXT
+      // ------------------------------------------
+
+      if (
+        message.type ===
+        'context_ready'
+      ) {
+        speakingContext = false
+        choosingContext = false
+
+        const summary =
+          String(
+            message.context
+              ?.summary ||
+              'Context loaded',
+          )
+
+        updateHud(
+          'CONTEXT READY\n\n' +
+            summary,
+        )
+
+        setTimeout(
+          listeningScreen,
+          1800,
+        )
+
+        return
+      }
+
+      if (
+        message.type ===
+        'context_skipped'
+      ) {
+        speakingContext = false
+        choosingContext = false
+
+        listeningScreen()
+
+        return
+      }
+
+      // ------------------------------------------
+      // MANUAL ANSWER
+      // ------------------------------------------
+
       if (
         message.type ===
         'manual_answer'
       ) {
-        manualAsk =
-          false
+        manualAsk = false
 
         updateHud(
           'ANSWER\n\n' +
@@ -411,6 +583,78 @@ socket.onmessage =
         return
       }
 
+      // ------------------------------------------
+      // NOTES
+      // ------------------------------------------
+
+      if (
+        message.type ===
+        'notes_started'
+      ) {
+        notesActive = true
+        notesProcessing = false
+
+        listeningScreen()
+
+        return
+      }
+
+      if (
+        message.type ===
+        'notes_processing'
+      ) {
+        notesActive = false
+        notesProcessing = true
+
+        updateHud(
+          'NOTES\n\nGenerating notes...',
+        )
+
+        return
+      }
+
+      if (
+        message.type ===
+        'notes_saved'
+      ) {
+        notesActive = false
+        notesProcessing = false
+
+        updateHud(
+          'NOTES SAVED\n\n' +
+            String(
+              message.title ||
+                'Session Notes',
+            ) +
+            '\n\nTap: back',
+        )
+
+        return
+      }
+
+      if (
+        message.type ===
+        'notes_error'
+      ) {
+        notesActive = false
+        notesProcessing = false
+
+        updateHud(
+          'NOTES ERROR\n\n' +
+            String(
+              message.text ||
+                'Could not save.',
+            ) +
+            '\n\nTap: back',
+        )
+
+        return
+      }
+
+      // ------------------------------------------
+      // MODE
+      // ------------------------------------------
+
       if (
         message.type ===
         'mode_changed'
@@ -418,7 +662,7 @@ socket.onmessage =
         mode =
           message.mode as Mode
 
-        listeningScreen()
+        return
       }
     } catch (error) {
       console.error(
@@ -448,59 +692,7 @@ socket.onclose =
   }
 
 // ==================================================
-// SEND CONTROL
-// ==================================================
-
-function sendControl(
-  payload: object,
-) {
-  if (
-    socket.readyState ===
-    WebSocket.OPEN
-  ) {
-    socket.send(
-      JSON.stringify(
-        payload,
-      ),
-    )
-  }
-}
-
-// ==================================================
-// MANUAL ASK
-// ==================================================
-
-function startManualAsk() {
-  manualAsk =
-    true
-
-  cardIndex =
-    -1
-
-  sendControl({
-    type:
-      'manual_ask_start',
-  })
-
-  updateHud(
-    'ASK ME\n\nSpeak your question...\n\nTap: cancel',
-  )
-}
-
-function cancelManualAsk() {
-  manualAsk =
-    false
-
-  sendControl({
-    type:
-      'manual_ask_cancel',
-  })
-
-  listeningScreen()
-}
-
-// ==================================================
-// EVENT TYPE
+// EVENT HELPER
 // ==================================================
 
 function eventTypeOf(
@@ -545,15 +737,15 @@ function exitCopilot() {
 }
 
 // ==================================================
-// EVENTS
+// G2 EVENTS
 // ==================================================
 
 const unsubscribe =
   bridge.onEvenHubEvent(
     event => {
-      // -----------------------------
+      // ------------------------------------------
       // AUDIO
-      // -----------------------------
+      // ------------------------------------------
 
       if (
         event.audioEvent
@@ -561,17 +753,11 @@ const unsubscribe =
         socket.readyState ===
           WebSocket.OPEN
       ) {
-        const pcm =
-          event.audioEvent
-            .audioPcm
-
-        const audioBuffer =
-          new Uint8Array(
-            pcm,
-          ).buffer
-
         socket.send(
-          audioBuffer,
+          new Uint8Array(
+            event.audioEvent
+              .audioPcm,
+          ).buffer,
         )
       }
 
@@ -585,9 +771,9 @@ const unsubscribe =
           event.textEvent,
         )
 
-      // -----------------------------
-      // DOUBLE TAP EXIT
-      // -----------------------------
+      // ------------------------------------------
+      // DOUBLE TAP = EXIT
+      // ------------------------------------------
 
       if (
         sysType ===
@@ -600,9 +786,9 @@ const unsubscribe =
         return
       }
 
-      // -----------------------------
+      // ------------------------------------------
       // SWIPE UP
-      // -----------------------------
+      // ------------------------------------------
 
       if (
         sysType ===
@@ -613,14 +799,14 @@ const unsubscribe =
         if (
           selectingMode
         ) {
-          changeMode(
-            -1,
-          )
+          changeMode(-1)
 
           return
         }
 
         if (
+          choosingContext ||
+          speakingContext ||
           manualAsk
         ) {
           return
@@ -631,9 +817,9 @@ const unsubscribe =
         return
       }
 
-      // -----------------------------
+      // ------------------------------------------
       // SWIPE DOWN
-      // -----------------------------
+      // ------------------------------------------
 
       if (
         sysType ===
@@ -644,27 +830,42 @@ const unsubscribe =
         if (
           selectingMode
         ) {
-          changeMode(
-            1,
-          )
+          changeMode(1)
 
           return
         }
 
         if (
+          choosingContext
+        ) {
+          skipContext()
+
+          return
+        }
+
+        if (
+          speakingContext ||
           manualAsk
         ) {
           return
         }
 
-        nextCard()
+        if (
+          cardIndex >= 0
+        ) {
+          nextCard()
+
+          return
+        }
+
+        toggleNotes()
 
         return
       }
 
-      // -----------------------------
+      // ------------------------------------------
       // SINGLE TAP
-      // -----------------------------
+      // ------------------------------------------
 
       if (
         sysType ===
@@ -672,6 +873,7 @@ const unsubscribe =
         textType ===
           OsEventTypeList.CLICK_EVENT
       ) {
+        // SELECT MODE
         if (
           selectingMode
         ) {
@@ -680,20 +882,37 @@ const unsubscribe =
               modeIndex
             ]
 
-          selectingMode =
-            false
+          selectingMode = false
 
           sendControl({
             type:
               'set_mode',
+
             mode,
           })
 
-          listeningScreen()
+          showContextChoice()
 
           return
         }
 
+        // CONTEXT CHOICE
+        if (
+          choosingContext
+        ) {
+          startContextCapture()
+
+          return
+        }
+
+        // CONTEXT IS LISTENING
+        if (
+          speakingContext
+        ) {
+          return
+        }
+
+        // MANUAL ASK CANCEL
         if (
           manualAsk
         ) {
@@ -702,26 +921,35 @@ const unsubscribe =
           return
         }
 
+        // DISMISS CURRENT CARD
         if (
-          cardIndex >=
-          0
+          cardIndex >= 0
         ) {
-          cardIndex =
-            -1
+          cardIndex = -1
 
           listeningScreen()
 
           return
         }
 
+        // RETURN AFTER NOTES
+        if (
+          notesProcessing
+        ) {
+          listeningScreen()
+
+          return
+        }
+
+        // START ASK ME
         startManualAsk()
 
         return
       }
 
-      // -----------------------------
+      // ------------------------------------------
       // SYSTEM EXIT
-      // -----------------------------
+      // ------------------------------------------
 
       if (
         sysType ===
