@@ -96,6 +96,7 @@ function loadMemory() {
     if (!fs.existsSync(MEMORY_FILE)) {
       return {
         accounts: {},
+        entities: {},
       }
     }
 
@@ -109,15 +110,20 @@ function loadMemory() {
     return {
       accounts:
         parsed.accounts || {},
+
+      entities:
+        parsed.entities || {},
     }
   } catch {
     return {
       accounts: {},
+      entities: {},
     }
   }
 }
 
-let persistentMemory = loadMemory()
+let persistentMemory =
+  loadMemory()
 
 function saveMemory() {
   try {
@@ -127,6 +133,9 @@ function saveMemory() {
         {
           accounts:
             persistentMemory.accounts,
+
+          entities:
+            persistentMemory.entities,
         },
         null,
         2,
@@ -216,17 +225,18 @@ function normalizedText(value) {
 
 app.get('/', (req, res) => {
   res.send(
-    'G2 Copilot JARVIS v7 running',
+    'G2 Copilot JARVIS v8 running',
   )
 })
 
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '7.0',
+    version: '8.0',
     jarvis: true,
     numericalIntelligence: true,
     claimVerification: true,
+    entityEnrichment: true,
     drive:
       Boolean(
         process.env.GOOGLE_REFRESH_TOKEN,
@@ -540,7 +550,7 @@ wss.on('connection', g2Socket => {
   )
 
   console.log(
-    'NEW G2 JARVIS v7 SESSION',
+    'NEW G2 JARVIS v8 SESSION',
   )
 
   console.log(
@@ -550,6 +560,7 @@ wss.on('connection', g2Socket => {
   let conversation = []
   let recentCards = []
   let recentClaims = []
+  let recentEntities = []
 
   let mode = 'SALES'
 
@@ -566,15 +577,10 @@ wss.on('connection', g2Socket => {
 
   let noteTaking = false
   let noteTranscript = []
-  let noteStartedAt = null
 
   const MIN_RELEVANCE = 7
-
-  const BUNDLE_COOLDOWN_MS =
-    10000
-
-  const MAX_CONVERSATION_ITEMS =
-    60
+  const BUNDLE_COOLDOWN_MS = 10000
+  const MAX_CONVERSATION_ITEMS = 60
 
   // ==================================================
   // DEEPGRAM
@@ -624,16 +630,15 @@ Act like a proactive everyday JARVIS.
 
 Prioritize:
 - useful facts
-- context
-- names
+- people
 - companies
 - products
+- technologies
 - places
-- corrections
 - definitions
+- acronyms
+- corrections
 - interesting connections
-- numerical implications
-- claims worth checking
 - current information
 `
     }
@@ -645,6 +650,8 @@ MEETING MODE
 Act like a live chief of staff.
 
 Prioritize:
+- people/roles
+- companies/vendors
 - decisions
 - commitments
 - owners
@@ -653,8 +660,6 @@ Prioritize:
 - contradictions
 - unresolved issues
 - action items
-- next steps
-- claims that affect decisions
 `
     }
 
@@ -666,14 +671,13 @@ Act like a proactive tutor.
 
 Prioritize:
 - concepts
+- technologies
+- acronyms
 - definitions
 - formulas
-- explanations
+- people/theories when relevant
 - examples
 - professor emphasis
-- conceptual connections
-- numerical reasoning
-- factual claims
 - misconceptions
 `
     }
@@ -684,31 +688,29 @@ SALES MODE
 Act like an elite technology AE copilot.
 
 Prioritize:
+- customers
+- vendors
+- executives
+- products
+- technologies
+- competitors
 - buying signals
 - pain
 - budget
 - timeline
 - renewals
 - decision makers
-- economic buyer
-- vendor dissatisfaction
 - cloud
 - cybersecurity
 - AI
 - licensing
 - infrastructure
 - data
-- hardware
-- competitors
-- objections
-- next-best action
-- useful calculations
-- factual vendor/product claims
 `
   }
 
   // ==================================================
-  // JARVIS TRIGGER ENGINE
+  // TRIGGER ENGINE
   // ==================================================
 
   async function analyzeMoment(
@@ -718,18 +720,22 @@ Prioritize:
       await anthropic.messages.create({
         model: 'claude-sonnet-5',
 
-        max_tokens: 700,
+        max_tokens: 800,
 
         system: `
 You are the trigger engine for proactive smart glasses.
 
-Do NOT generate final HUD text.
+Do NOT generate the final HUD text.
 
 ${modePrompt()}
 
-Detect important signal types:
+Detect important signals:
 
-ENTITY
+PERSON
+COMPANY
+PRODUCT
+TECHNOLOGY
+ACRONYM
 NUMBER
 CLAIM
 QUESTION
@@ -741,25 +747,34 @@ OBJECTION
 COMPETITOR
 ACTION_ITEM
 DEFINITION
-TECHNICAL_CONCEPT
 CURRENT_INFO
 NO_SIGNAL
 
-A CLAIM means a factual statement that could potentially be true, false, misleading, outdated, overly broad, or worth verifying.
+For entities, return the actual entity name.
 
 Examples:
 
-"Microsoft bought Wiz."
-"Azure is always cheaper than AWS."
-"ServiceNow acquired company X."
-"The renewal increased 30%."
-"Company X's CEO is Jane Doe."
+{
+  "type": "COMPANY",
+  "text": "Databricks"
+}
 
-Do NOT fact-check:
-- opinions
-- preferences
-- subjective statements
-- obvious conversational filler
+{
+  "type": "PERSON",
+  "text": "Satya Nadella"
+}
+
+{
+  "type": "PRODUCT",
+  "text": "Microsoft Copilot"
+}
+
+{
+  "type": "ACRONYM",
+  "text": "MDR"
+}
+
+Only interrupt when something materially useful exists.
 
 Return ONLY valid JSON:
 
@@ -768,17 +783,18 @@ Return ONLY valid JSON:
   "relevance": 9,
   "signals": [
     {
-      "type": "CLAIM",
-      "text": "Microsoft bought Wiz"
+      "type": "COMPANY",
+      "text": "Databricks"
     }
   ],
   "has_numbers": false,
-  "has_claims": true,
-  "research": true,
-  "research_query": "Microsoft Wiz acquisition"
+  "has_claims": false,
+  "has_entities": true,
+  "research": false,
+  "research_query": ""
 }
 
-No useful signal:
+If nothing useful:
 
 {
   "interrupt": false,
@@ -786,6 +802,7 @@ No useful signal:
   "signals": [],
   "has_numbers": false,
   "has_claims": false,
+  "has_entities": false,
   "research": false,
   "research_query": ""
 }
@@ -809,6 +826,371 @@ ${context}
     return parseClaudeJson(
       extractText(response),
     )
+  }
+
+  // ==================================================
+  // ENTITY ENRICHMENT
+  // ==================================================
+
+  async function enrichEntities(
+    context,
+    trigger,
+  ) {
+    if (
+      trigger?.has_entities !== true
+    ) {
+      return {
+        useful: false,
+        entities: [],
+      }
+    }
+
+    const supportedTypes = [
+      'PERSON',
+      'COMPANY',
+      'PRODUCT',
+      'TECHNOLOGY',
+      'ACRONYM',
+    ]
+
+    const entities =
+      (trigger.signals || [])
+        .filter(signal =>
+          supportedTypes.includes(
+            signal.type,
+          ),
+        )
+        .map(signal => ({
+          type:
+            String(signal.type),
+
+          name:
+            String(
+              signal.text || '',
+            ).trim(),
+        }))
+        .filter(
+          entity =>
+            entity.name,
+        )
+        .slice(0, 4)
+
+    if (entities.length === 0) {
+      return {
+        useful: false,
+        entities: [],
+      }
+    }
+
+    const newEntities =
+      entities.filter(entity => {
+        const key =
+          `${entity.type}:${normalizedText(
+            entity.name,
+          )}`
+
+        return !recentEntities.includes(
+          key,
+        )
+      })
+
+    if (newEntities.length === 0) {
+      return {
+        useful: false,
+        entities: [],
+      }
+    }
+
+    const routeResponse =
+      await anthropic.messages.create({
+        model: 'claude-sonnet-5',
+
+        max_tokens: 500,
+
+        system: `
+You decide which entities in a live conversation are worth enriching.
+
+${modePrompt()}
+
+For each entity, decide:
+
+- relevance to the current moment
+- whether current web research is needed
+- what kind of context would actually help
+
+Examples of useful enrichment:
+
+COMPANY:
+- what it does
+- strategic position
+- recent initiatives
+- relevant competitor context
+- acquisition/news if current
+
+PERSON:
+- role/title
+- why they matter
+- relevant company context
+
+PRODUCT:
+- what it does
+- where it fits
+- major competitor/differentiator
+
+TECHNOLOGY:
+- concise explanation
+- why it matters in this context
+
+ACRONYM:
+- expansion
+- concise meaning
+- why it matters
+
+Return ONLY valid JSON:
+
+{
+  "entities": [
+    {
+      "type": "COMPANY",
+      "name": "Databricks",
+      "relevance": 9,
+      "research": true,
+      "query": "Databricks latest company strategy AI lakehouse 2026",
+      "need": "current company and competitive context"
+    }
+  ]
+}
+
+If no enrichment is useful:
+
+{
+  "entities": []
+}
+
+No markdown.
+`,
+
+        messages: [
+          {
+            role: 'user',
+
+            content: `
+CONVERSATION:
+
+${context}
+
+ENTITIES:
+
+${JSON.stringify(
+  newEntities,
+)}
+`,
+          },
+        ],
+      })
+
+    const route =
+      parseClaudeJson(
+        extractText(
+          routeResponse,
+        ),
+      )
+
+    const routed =
+      Array.isArray(
+        route?.entities,
+      )
+        ? route.entities
+            .filter(
+              entity =>
+                Number(
+                  entity.relevance ||
+                    0,
+                ) >= 7,
+            )
+            .slice(0, 3)
+        : []
+
+    if (routed.length === 0) {
+      return {
+        useful: false,
+        entities: [],
+      }
+    }
+
+    const enriched = []
+
+    for (const entity of routed) {
+      const key =
+        `${entity.type}:${normalizedText(
+          entity.name,
+        )}`
+
+      let researchText =
+        'No live research performed.'
+
+      if (
+        entity.research === true &&
+        entity.query
+      ) {
+        try {
+          const result =
+            await tvly.search(
+              entity.query,
+              {
+                searchDepth:
+                  'basic',
+
+                maxResults: 5,
+
+                includeAnswer:
+                  true,
+              },
+            )
+
+          researchText = `
+SUMMARY:
+${result.answer || 'None'}
+
+SOURCES:
+${(result.results || [])
+  .slice(0, 5)
+  .map(
+    (item, index) =>
+      [
+        `SOURCE ${index + 1}`,
+        `Title: ${item.title || ''}`,
+        `Content: ${item.content || ''}`,
+      ].join('\n'),
+  )
+  .join('\n\n')}
+`
+        } catch (error) {
+          console.error(
+            'ENTITY RESEARCH ERROR:',
+            error,
+          )
+        }
+      }
+
+      const response =
+        await anthropic.messages.create({
+          model: 'claude-sonnet-5',
+
+          max_tokens: 500,
+
+          system: `
+You produce concise entity enrichment for smart glasses.
+
+${modePrompt()}
+
+The wearer does NOT want a biography or encyclopedia dump.
+
+Give only information that helps with the current conversation.
+
+Return ONLY valid JSON:
+
+{
+  "entity": "Databricks",
+  "type": "COMPANY",
+  "useful": true,
+  "relevance": 9,
+  "summary": "Databricks centers on lakehouse/data+AI workloads; key competitive overlap may include Snowflake, Fabric, and cloud-native analytics."
+}
+
+Rules:
+
+- Max 35 words in summary.
+- Use current research when supplied.
+- Do not fabricate.
+- For acronyms, expand the acronym.
+- For a person, mention role only when confident.
+- For a product, explain function + relevant context.
+- If enrichment adds little, useful=false.
+- No markdown.
+`,
+
+          messages: [
+            {
+              role: 'user',
+
+              content: `
+CONVERSATION:
+
+${context}
+
+ENTITY:
+
+${JSON.stringify(
+  entity,
+)}
+
+LIVE RESEARCH:
+
+${researchText}
+`,
+            },
+          ],
+        })
+
+      const parsed =
+        parseClaudeJson(
+          extractText(
+            response,
+          ),
+        )
+
+      if (
+        parsed?.useful === true &&
+        Number(
+          parsed.relevance || 0,
+        ) >= 7 &&
+        parsed.summary
+      ) {
+        enriched.push(
+          parsed,
+        )
+
+        persistentMemory.entities[
+          key
+        ] = {
+          ...parsed,
+          enrichedAt:
+            new Date()
+              .toISOString(),
+        }
+
+        recentEntities.push(
+          key,
+        )
+      }
+    }
+
+    if (
+      recentEntities.length > 40
+    ) {
+      recentEntities =
+        recentEntities.slice(
+          -40,
+        )
+    }
+
+    saveMemory()
+
+    console.log(
+      'ENTITY ENRICHMENT:',
+      JSON.stringify(
+        enriched,
+      ),
+    )
+
+    return {
+      useful:
+        enriched.length > 0,
+
+      entities:
+        enriched,
+    }
   }
 
   // ==================================================
@@ -840,16 +1222,6 @@ ${context}
 You are the numerical intelligence engine for smart glasses.
 
 Extract meaningful numbers and calculate useful implications.
-
-Examples:
-
-8000 × $42/month
-= $336K/month
-= $4.032M/year
-
-18% off $2.4M
-= $432K savings
-= $1.968M final price
 
 Do not guess missing values.
 
@@ -899,13 +1271,12 @@ ${JSON.stringify(
         ],
       })
 
-    const parsed =
-      parseClaudeJson(
-        extractText(response),
-      )
-
     return (
-      parsed || {
+      parseClaudeJson(
+        extractText(
+          response,
+        ),
+      ) || {
         useful: false,
         relevance: 0,
         calculations: [],
@@ -938,20 +1309,14 @@ ${JSON.stringify(
             signal.type ===
             'CLAIM',
         )
-        .map(signal =>
-          String(
-            signal.text || '',
-          ).trim(),
+        .map(
+          signal =>
+            String(
+              signal.text || '',
+            ).trim(),
         )
         .filter(Boolean)
         .slice(0, 3)
-
-    if (claims.length === 0) {
-      return {
-        checked: false,
-        claims: [],
-      }
-    }
 
     const unseenClaims =
       claims.filter(claim => {
@@ -972,18 +1337,12 @@ ${JSON.stringify(
       }
     }
 
-    const query =
-      unseenClaims.join(' OR ')
-
-    console.log(
-      'FACT CHECK SEARCH:',
-      query,
-    )
-
     try {
       const search =
         await tvly.search(
-          query,
+          unseenClaims.join(
+            ' OR ',
+          ),
           {
             searchDepth:
               'advanced',
@@ -996,28 +1355,6 @@ ${JSON.stringify(
           },
         )
 
-      const sources =
-        (search.results || [])
-          .slice(0, 6)
-          .map(
-            (
-              item,
-              index,
-            ) => ({
-              index:
-                index + 1,
-
-              title:
-                item.title || '',
-
-              url:
-                item.url || '',
-
-              content:
-                item.content || '',
-            }),
-          )
-
       const response =
         await anthropic.messages.create({
           model: 'claude-sonnet-5',
@@ -1025,38 +1362,18 @@ ${JSON.stringify(
           max_tokens: 900,
 
           system: `
-You verify factual claims using supplied web research.
+Verify factual claims using supplied web research.
 
-Classify each claim as exactly one:
+Classify each claim:
 
 SUPPORTED
 CONTRADICTED
 MISLEADING
 UNCERTAIN
 
-Definitions:
+Be conservative.
 
-SUPPORTED:
-Reliable evidence strongly supports it.
-
-CONTRADICTED:
-Reliable evidence clearly shows it is false.
-
-MISLEADING:
-There is some truth, but important context makes the statement materially misleading or overly broad.
-
-UNCERTAIN:
-Evidence is insufficient, conflicting, ambiguous, or outdated.
-
-IMPORTANT RULES:
-
-- Be conservative.
-- Do not mark a claim false merely because you did not find evidence.
-- Prefer primary or highly credible sources when present.
-- Current claims require current evidence.
-- Never invent evidence.
-- Only recommend interrupting the wearer if the correction materially matters.
-- Avoid pedantic corrections.
+Do not call something false merely because evidence is missing.
 
 Return ONLY valid JSON:
 
@@ -1064,10 +1381,10 @@ Return ONLY valid JSON:
   "checked": true,
   "claims": [
     {
-      "claim": "Microsoft bought Wiz",
+      "claim": "...",
       "verdict": "CONTRADICTED",
       "confidence": 9,
-      "correction": "Google announced an agreement to acquire Wiz, not Microsoft.",
+      "correction": "...",
       "worth_interrupting": true
     }
   ]
@@ -1081,10 +1398,6 @@ No markdown.
               role: 'user',
 
               content: `
-CONVERSATION:
-
-${context}
-
 CLAIMS:
 
 ${JSON.stringify(
@@ -1095,10 +1408,10 @@ SEARCH ANSWER:
 
 ${search.answer || 'None'}
 
-SEARCH SOURCES:
+SOURCES:
 
 ${JSON.stringify(
-  sources,
+  search.results || [],
 )}
 `,
             },
@@ -1107,7 +1420,9 @@ ${JSON.stringify(
 
       const parsed =
         parseClaudeJson(
-          extractText(response),
+          extractText(
+            response,
+          ),
         )
 
       for (
@@ -1115,7 +1430,9 @@ ${JSON.stringify(
         unseenClaims
       ) {
         recentClaims.push(
-          normalizedText(claim),
+          normalizedText(
+            claim,
+          ),
         )
       }
 
@@ -1123,13 +1440,10 @@ ${JSON.stringify(
         recentClaims.length > 30
       ) {
         recentClaims =
-          recentClaims.slice(-30)
+          recentClaims.slice(
+            -30,
+          )
       }
-
-      console.log(
-        'CLAIM VERIFICATION:',
-        JSON.stringify(parsed),
-      )
 
       return (
         parsed || {
@@ -1182,35 +1496,16 @@ ${JSON.stringify(
           },
         )
 
-      const results =
-        (result.results || [])
-          .slice(0, 5)
-          .map(
-            (
-              item,
-              index,
-            ) =>
-              [
-                `SOURCE ${index + 1}`,
-                `Title: ${item.title || ''}`,
-                `Content: ${item.content || ''}`,
-              ].join('\n'),
-          )
-          .join('\n\n')
-
       return `
-LIVE RESEARCH SUMMARY:
+SUMMARY:
 ${result.answer || 'None'}
 
 RESULTS:
-${results}
+${JSON.stringify(
+  result.results || [],
+)}
 `
-    } catch (error) {
-      console.error(
-        'Research error:',
-        error,
-      )
-
+    } catch {
       return (
         'Live research failed.'
       )
@@ -1226,6 +1521,7 @@ ${results}
     trigger,
     numericalIntel,
     verification,
+    entityIntel,
     research,
   ) {
     const recent =
@@ -1255,97 +1551,68 @@ ${results}
       await anthropic.messages.create({
         model: 'claude-sonnet-5',
 
-        max_tokens: 1100,
+        max_tokens: 1200,
 
         system: `
 You create compact HUD card bundles.
 
 ${modePrompt()}
 
+You receive:
+- trigger signals
+- entity enrichment
+- numerical intelligence
+- claim verification
+- optional live research
+
 Return 1 to 3 cards.
 
-Allowed card types:
+Allowed:
 
 KNOW_THIS
 QUESTIONS
 SAY_THIS
 
 ==================================================
-FACT CHECKING
+ENTITY ENRICHMENT
 ==================================================
 
-You may receive verified claims.
+Use useful entity enrichment when it creates a real conversational advantage.
 
-If a claim is:
-
-CONTRADICTED
-or
-MISLEADING
-
-AND:
-- confidence is at least 8
-- worth_interrupting is true
-
-then strongly consider a KNOW_THIS correction.
-
-Examples:
+Example:
 
 KNOW_THIS:
-"Correction: Google—not Microsoft—announced the Wiz acquisition."
+"Databricks is a lakehouse/data+AI platform; relevant overlap may include Snowflake, Fabric, and cloud-native analytics."
 
-Do NOT surface UNCERTAIN claims as corrections.
-
-For SUPPORTED claims, only surface confirmation if it is actually useful.
-
-Never embarrass or attack the speaker.
-
-Prefer concise neutral phrasing:
-
-"Correction:"
-"Context:"
-"Worth noting:"
+Do NOT show entity trivia just because an entity was mentioned.
 
 ==================================================
-NUMERICAL INTELLIGENCE
+CLAIMS
 ==================================================
 
-If useful calculations exist, consider a KNOW_THIS card with the most important implication.
+For CONTRADICTED or MISLEADING claims with confidence >= 8 and worth_interrupting=true, consider a concise neutral correction.
 
 ==================================================
-SALES
+NUMBERS
 ==================================================
 
-Prefer:
-1. KNOW_THIS
-2. QUESTIONS
-3. SAY_THIS
+If the numerical engine produced something materially useful, consider showing the strongest calculation.
 
 ==================================================
-MEETING
+MODE BEHAVIOR
 ==================================================
 
-Prefer:
-1. KNOW_THIS — risk/decision/correction
-2. QUESTIONS
-3. SAY_THIS
+SALES:
+Prefer KNOW_THIS → QUESTIONS → SAY_THIS
 
-==================================================
-SCHOOL
-==================================================
+MEETING:
+Prefer KNOW_THIS → QUESTIONS → SAY_THIS
 
-Prefer:
-1. KNOW_THIS — explanation/correction
-2. KNOW_THIS — useful connection
-3. QUESTIONS
+SCHOOL:
+Prefer KNOW_THIS explanation → KNOW_THIS connection → QUESTIONS
 
-==================================================
-GENERAL
-==================================================
-
-Prefer:
-1. KNOW_THIS — fact/correction/context
-2. KNOW_THIS — useful connection
-3. SAY_THIS or QUESTIONS if useful
+GENERAL:
+Prefer KNOW_THIS fact/context → KNOW_THIS connection → SAY_THIS/QUESTIONS if useful
 
 ==================================================
 
@@ -1373,8 +1640,8 @@ Return ONLY valid JSON:
 
 Maximum 3 cards.
 Minimum relevance 7.
-Do not repeat recent cards.
-Do not fabricate facts.
+No repetition.
+No fabricated facts.
 No markdown.
 `,
 
@@ -1391,6 +1658,12 @@ TRIGGER:
 
 ${JSON.stringify(trigger)}
 
+ENTITY INTELLIGENCE:
+
+${JSON.stringify(
+  entityIntel,
+)}
+
 NUMERICAL INTELLIGENCE:
 
 ${JSON.stringify(
@@ -1403,7 +1676,7 @@ ${JSON.stringify(
   verification,
 )}
 
-OTHER LIVE RESEARCH:
+OTHER RESEARCH:
 
 ${research}
 
@@ -1421,7 +1694,7 @@ ${recent || 'None'}
   }
 
   // ==================================================
-  // CARD UTILITIES
+  // CARD UTILS
   // ==================================================
 
   function normalizeCard(card) {
@@ -1553,10 +1826,6 @@ ${recent || 'None'}
     if (
       cleanCards.length === 0
     ) {
-      console.log(
-        'JARVIS: no usable cards',
-      )
-
       return
     }
 
@@ -1583,7 +1852,6 @@ ${recent || 'None'}
       console.log(
         'JARVIS CARD SENT:',
         card.type,
-        JSON.stringify(card),
       )
     }
 
@@ -1629,13 +1897,6 @@ ${recent || 'None'}
               context,
             )
 
-          console.log(
-            'JARVIS TRIGGER:',
-            JSON.stringify(
-              trigger,
-            ),
-          )
-
           if (
             !trigger ||
             trigger.interrupt !== true ||
@@ -1655,10 +1916,6 @@ ${recent || 'None'}
               lastBundleAt <
             BUNDLE_COOLDOWN_MS
           ) {
-            console.log(
-              'JARVIS cooldown active',
-            )
-
             analyzedRevision =
               targetRevision
 
@@ -1668,6 +1925,7 @@ ${recent || 'None'}
           const [
             numericalIntel,
             verification,
+            entityIntel,
             research,
           ] =
             await Promise.all([
@@ -1677,6 +1935,11 @@ ${recent || 'None'}
               ),
 
               verifyClaims(
+                context,
+                trigger,
+              ),
+
+              enrichEntities(
                 context,
                 trigger,
               ),
@@ -1692,6 +1955,7 @@ ${recent || 'None'}
               trigger,
               numericalIntel,
               verification,
+              entityIntel,
               research,
             )
 
@@ -1768,23 +2032,8 @@ ${recent || 'None'}
 
   async function generateNotes() {
     if (
-      noteTranscript.length ===
-      0
+      noteTranscript.length === 0
     ) {
-      if (
-        g2Socket.readyState ===
-        WebSocket.OPEN
-      ) {
-        g2Socket.send(
-          JSON.stringify({
-            type: 'notes_error',
-
-            text:
-              'No speech was captured.',
-          }),
-        )
-      }
-
       return
     }
 
@@ -1806,7 +2055,7 @@ ${recent || 'None'}
           system: `
 You are an expert AI note taker.
 
-Turn this transcript into polished, highly understandable notes.
+Turn the transcript into polished, highly understandable notes.
 
 MODE:
 ${mode}
@@ -1827,18 +2076,7 @@ Include executive summary, customer situation, pain points, technical environmen
 GENERAL:
 Organize the important ideas clearly.
 
-If factual claims appeared in the conversation, do NOT silently rewrite questionable claims as established truth.
-
-When useful, label them as:
-- Confirmed
-- Unverified
-- Potentially inaccurate
-
-==================================================
-MANDATORY ENDING
-==================================================
-
-Every note MUST end with:
+EVERY note MUST end with:
 
 AI SUMMARY & EXPLANATION
 
@@ -1854,8 +2092,6 @@ For SCHOOL:
 
 For SALES or MEETING:
 5. What I Would Do Next
-
-Explain important calculations clearly.
 
 Return ONLY valid JSON:
 
@@ -1883,7 +2119,9 @@ ${transcript}
 
       const parsed =
         parseClaudeJson(
-          extractText(response),
+          extractText(
+            response,
+          ),
         )
 
       if (
@@ -1917,16 +2155,6 @@ ${transcript}
           destination.folder,
         )
 
-      console.log(
-        'GOOGLE DOC SAVED:',
-        title,
-      )
-
-      console.log(
-        'DESTINATION:',
-        destination.path,
-      )
-
       if (
         g2Socket.readyState ===
         WebSocket.OPEN
@@ -1955,20 +2183,6 @@ ${transcript}
         'NOTE SAVE ERROR:',
         error,
       )
-
-      if (
-        g2Socket.readyState ===
-        WebSocket.OPEN
-      ) {
-        g2Socket.send(
-          JSON.stringify({
-            type: 'notes_error',
-
-            text:
-              'Could not save notes.',
-          }),
-        )
-      }
     }
   }
 
@@ -1979,8 +2193,6 @@ ${transcript}
 
     noteTaking = true
     noteTranscript = []
-    noteStartedAt =
-      new Date()
 
     g2Socket.send(
       JSON.stringify({
@@ -2006,7 +2218,6 @@ ${transcript}
     await generateNotes()
 
     noteTranscript = []
-    noteStartedAt = null
   }
 
   // ==================================================
@@ -2027,9 +2238,9 @@ You are answering a direct smart-glasses question.
 
 ${modePrompt()}
 
-Use conversation context when relevant.
+Use the conversation context.
 
-If the user asks whether a claim is true, be careful about certainty and distinguish known information from uncertainty.
+If the question asks about a person, company, product, acronym, or technology, explain the entity concisely and in context.
 
 Maximum 70 words.
 
@@ -2112,7 +2323,7 @@ ${question}
   }
 
   // ==================================================
-  // TRANSCRIPTS
+  // TRANSCRIPT
   // ==================================================
 
   deepgramSocket.on(
@@ -2214,11 +2425,6 @@ ${question}
       ) {
         mode = requested
 
-        console.log(
-          'MODE:',
-          mode,
-        )
-
         g2Socket.send(
           JSON.stringify({
             type:
@@ -2257,7 +2463,6 @@ ${question}
       'notes_start'
     ) {
       startNotes()
-
       return
     }
 
@@ -2266,7 +2471,6 @@ ${question}
       'notes_stop'
     ) {
       stopNotes()
-
       return
     }
   }
@@ -2309,10 +2513,6 @@ ${question}
       }
     },
   )
-
-  // ==================================================
-  // CLEANUP
-  // ==================================================
 
   g2Socket.on(
     'close',
@@ -2369,7 +2569,7 @@ server.listen(
   '0.0.0.0',
   () => {
     console.log(
-      `G2 JARVIS v7 running on port ${PORT}`,
+      `G2 JARVIS v8 running on port ${PORT}`,
     )
   },
 )
