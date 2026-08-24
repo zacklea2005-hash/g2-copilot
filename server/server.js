@@ -62,25 +62,58 @@ function createDriveClient() {
   })
 }
 
-const driveFolderCache = new Map()
+const driveFolderCache =
+  new Map()
 
 // ==================================================
 // LOCAL STORAGE
 // ==================================================
 
-const DATA_DIR = path.join(__dirname, 'data')
-const NOTES_DIR = path.join(DATA_DIR, 'notes')
-const MEMORY_FILE = path.join(DATA_DIR, 'memory.json')
+const DATA_DIR =
+  path.join(
+    __dirname,
+    'data',
+  )
+
+const NOTES_DIR =
+  path.join(
+    DATA_DIR,
+    'notes',
+  )
+
+const MEMORY_FILE =
+  path.join(
+    DATA_DIR,
+    'memory.json',
+  )
 
 const ACCOUNT_CACHE_MAX_AGE_MS =
   24 * 60 * 60 * 1000
 
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true })
+if (
+  !fs.existsSync(
+    DATA_DIR,
+  )
+) {
+  fs.mkdirSync(
+    DATA_DIR,
+    {
+      recursive: true,
+    },
+  )
 }
 
-if (!fs.existsSync(NOTES_DIR)) {
-  fs.mkdirSync(NOTES_DIR, { recursive: true })
+if (
+  !fs.existsSync(
+    NOTES_DIR,
+  )
+) {
+  fs.mkdirSync(
+    NOTES_DIR,
+    {
+      recursive: true,
+    },
+  )
 }
 
 // ==================================================
@@ -89,18 +122,28 @@ if (!fs.existsSync(NOTES_DIR)) {
 
 function loadMemory() {
   try {
-    if (!fs.existsSync(MEMORY_FILE)) {
+    if (
+      !fs.existsSync(
+        MEMORY_FILE,
+      )
+    ) {
       return {
         accounts: {},
       }
     }
 
-    const parsed = JSON.parse(
-      fs.readFileSync(MEMORY_FILE, 'utf8'),
-    )
+    const parsed =
+      JSON.parse(
+        fs.readFileSync(
+          MEMORY_FILE,
+          'utf8',
+        ),
+      )
 
     return {
-      accounts: parsed.accounts || {},
+      accounts:
+        parsed.accounts ||
+        {},
     }
   } catch {
     return {
@@ -109,7 +152,8 @@ function loadMemory() {
   }
 }
 
-let persistentMemory = loadMemory()
+let persistentMemory =
+  loadMemory()
 
 function saveMemory() {
   try {
@@ -137,43 +181,74 @@ function saveMemory() {
 // ==================================================
 
 function cleanJson(raw) {
-  return String(raw || '')
-    .replace(/^```json\s*/i, '')
-    .replace(/^```\s*/i, '')
-    .replace(/\s*```$/i, '')
+  return String(
+    raw || '',
+  )
+    .replace(
+      /^```json\s*/i,
+      '',
+    )
+    .replace(
+      /^```\s*/i,
+      '',
+    )
+    .replace(
+      /\s*```$/i,
+      '',
+    )
     .trim()
 }
 
-function extractText(response) {
+function extractText(
+  response,
+) {
   return response.content
-    .filter(item => item.type === 'text')
-    .map(item => item.text)
+    .filter(
+      item =>
+        item.type ===
+        'text',
+    )
+    .map(
+      item =>
+        item.text,
+    )
     .join('\n')
     .trim()
 }
 
-function parseClaudeJson(raw) {
-  const cleaned = cleanJson(raw)
+function parseClaudeJson(
+  raw,
+) {
+  const cleaned =
+    cleanJson(raw)
 
   try {
-    return JSON.parse(cleaned)
+    return JSON.parse(
+      cleaned,
+    )
   } catch {
     const firstBrace =
-      cleaned.indexOf('{')
+      cleaned.indexOf(
+        '{',
+      )
 
     const lastBrace =
-      cleaned.lastIndexOf('}')
+      cleaned.lastIndexOf(
+        '}',
+      )
 
     if (
       firstBrace !== -1 &&
       lastBrace !== -1 &&
-      lastBrace > firstBrace
+      lastBrace >
+        firstBrace
     ) {
       try {
         return JSON.parse(
           cleaned.slice(
             firstBrace,
-            lastBrace + 1,
+            lastBrace +
+              1,
           ),
         )
       } catch {
@@ -185,84 +260,139 @@ function parseClaudeJson(raw) {
   }
 }
 
-function safeFilename(value) {
-  return String(value || 'G2 Notes')
-    .replace(/[^\w\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .slice(0, 80)
+function safeFilename(
+  value,
+) {
+  return String(
+    value ||
+      'G2 Notes',
+  )
+    .replace(
+      /[^\w\s-]/g,
+      '',
+    )
+    .replace(
+      /\s+/g,
+      '-',
+    )
+    .replace(
+      /-+/g,
+      '-',
+    )
+    .slice(
+      0,
+      80,
+    )
 }
 
-function escapeDriveQuery(value) {
-  return String(value)
-    .replace(/\\/g, '\\\\')
-    .replace(/'/g, "\\'")
+function escapeDriveQuery(
+  value,
+) {
+  return String(
+    value,
+  )
+    .replace(
+      /\\/g,
+      '\\\\',
+    )
+    .replace(
+      /'/g,
+      "\\'",
+    )
 }
 
 // ==================================================
 // HTTP
 // ==================================================
 
-app.get('/', (req, res) => {
-  res.send(
-    'G2 Copilot JARVIS + Notes running',
-  )
-})
+app.get(
+  '/',
+  (req, res) => {
+    res.send(
+      'G2 Copilot JARVIS v6 running',
+    )
+  },
+)
 
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'ok',
-    version: '5.0',
-    jarvis: true,
-    bundles: true,
-    drive:
-      Boolean(
-        process.env.GOOGLE_REFRESH_TOKEN,
-      ),
-  })
-})
+app.get(
+  '/health',
+  (req, res) => {
+    res.json({
+      status: 'ok',
+      version: '6.0',
+      jarvis: true,
+      bundles: true,
+      numericalIntelligence:
+        true,
+      drive:
+        Boolean(
+          process.env
+            .GOOGLE_REFRESH_TOKEN,
+        ),
+    })
+  },
+)
 
 // ==================================================
 // GOOGLE AUTH
 // ==================================================
 
-app.get('/google/auth', (req, res) => {
-  const client =
-    createGoogleOAuthClient()
+app.get(
+  '/google/auth',
+  (req, res) => {
+    const client =
+      createGoogleOAuthClient()
 
-  const authUrl =
-    client.generateAuthUrl({
-      access_type: 'offline',
-      prompt: 'consent',
-      scope: [
-        'https://www.googleapis.com/auth/drive.file',
-        'https://www.googleapis.com/auth/drive.metadata.readonly',
-      ],
-    })
+    const authUrl =
+      client.generateAuthUrl({
+        access_type:
+          'offline',
 
-  res.redirect(authUrl)
-})
+        prompt:
+          'consent',
+
+        scope: [
+          'https://www.googleapis.com/auth/drive.file',
+          'https://www.googleapis.com/auth/drive.metadata.readonly',
+        ],
+      })
+
+    res.redirect(
+      authUrl,
+    )
+  },
+)
 
 app.get(
   '/google/callback',
-  async (req, res) => {
+  async (
+    req,
+    res,
+  ) => {
     try {
       const code =
         String(
-          req.query.code || '',
+          req.query.code ||
+            '',
         )
 
       const client =
         createGoogleOAuthClient()
 
-      const { tokens } =
-        await client.getToken(code)
+      const {
+        tokens,
+      } =
+        await client.getToken(
+          code,
+        )
 
       console.log(
         'GOOGLE OAUTH SUCCESS',
       )
 
-      if (tokens.refresh_token) {
+      if (
+        tokens.refresh_token
+      ) {
         console.log(
           'GOOGLE_REFRESH_TOKEN:',
           tokens.refresh_token,
@@ -272,14 +402,18 @@ app.get(
       res.send(
         'G2 Copilot Google Drive connected. You can close this page.',
       )
-    } catch (error) {
+    } catch (
+      error
+    ) {
       console.error(
         'Google OAuth error:',
         error,
       )
 
       res
-        .status(500)
+        .status(
+          500,
+        )
         .send(
           'Google authorization failed.',
         )
@@ -310,7 +444,9 @@ async function findFolder(
   }
 
   const escapedName =
-    escapeDriveQuery(name)
+    escapeDriveQuery(
+      name,
+    )
 
   const query = [
     `name = '${escapedName}'`,
@@ -319,19 +455,26 @@ async function findFolder(
     parentId
       ? `'${parentId}' in parents`
       : `'root' in parents`,
-  ].join(' and ')
+  ].join(
+    ' and ',
+  )
 
   const result =
     await drive.files.list({
       q: query,
-      fields: 'files(id,name)',
-      pageSize: 20,
+      fields:
+        'files(id,name)',
+      pageSize:
+        20,
     })
 
   const folder =
-    result.data.files?.[0]
+    result.data
+      .files?.[0]
 
-  if (!folder?.id) {
+  if (
+    !folder?.id
+  ) {
     throw new Error(
       `Drive folder not found: ${name}`,
     )
@@ -358,7 +501,8 @@ async function getDriveDestination(
     )
 
   if (
-    route.area === 'GENERAL'
+    route.area ===
+    'GENERAL'
   ) {
     const folder =
       await findFolder(
@@ -376,7 +520,8 @@ async function getDriveDestination(
   }
 
   if (
-    route.area === 'WORK'
+    route.area ===
+    'WORK'
   ) {
     const folder =
       await findFolder(
@@ -400,10 +545,13 @@ async function getDriveDestination(
       root,
     )
 
-  if (!route.course) {
+  if (
+    !route.course
+  ) {
     return {
       drive,
-      folder: school,
+      folder:
+        school,
       path:
         'G2 Copilot / School',
     }
@@ -418,7 +566,8 @@ async function getDriveDestination(
 
   return {
     drive,
-    folder: course,
+    folder:
+      course,
     path:
       `G2 Copilot / School / ${route.course}`,
   }
@@ -435,9 +584,12 @@ async function createGoogleDoc(
   const result =
     await drive.files.create({
       requestBody: {
-        name: title,
+        name:
+          title,
+
         mimeType:
           'application/vnd.google-apps.document',
+
         parents: [
           folderId,
         ],
@@ -446,7 +598,9 @@ async function createGoogleDoc(
       media: {
         mimeType:
           'text/html',
-        body: html,
+
+        body:
+          html,
       },
 
       fields:
@@ -465,8 +619,11 @@ async function classifySchoolCourse(
 ) {
   const response =
     await anthropic.messages.create({
-      model: 'claude-sonnet-5',
-      max_tokens: 160,
+      model:
+        'claude-sonnet-5',
+
+      max_tokens:
+        160,
 
       system: `
 Classify the lecture into exactly one:
@@ -487,30 +644,36 @@ Return ONLY valid JSON:
 
       messages: [
         {
-          role: 'user',
-          content: transcript,
+          role:
+            'user',
+          content:
+            transcript,
         },
       ],
     })
 
   const parsed =
     parseClaudeJson(
-      extractText(response),
+      extractText(
+        response,
+      ),
     )
 
-  const allowed = [
-    'STAT 340',
-    'MATH 340',
-    'LIS 462',
-    'COMP SCI 320',
-  ]
+  const allowed =
+    [
+      'STAT 340',
+      'MATH 340',
+      'LIS 462',
+      'COMP SCI 320',
+    ]
 
   if (
     allowed.includes(
       parsed?.course,
     ) &&
     Number(
-      parsed?.confidence || 0,
+      parsed?.confidence ||
+        0,
     ) >= 6
   ) {
     return parsed.course
@@ -523,88 +686,127 @@ Return ONLY valid JSON:
 // G2 SESSION
 // ==================================================
 
-wss.on('connection', g2Socket => {
-  console.log(
-    '\n==============================',
-  )
-  console.log(
-    'NEW G2 JARVIS SESSION',
-  )
-  console.log(
-    '==============================\n',
-  )
+wss.on(
+  'connection',
+  g2Socket => {
+    console.log(
+      '\n==============================',
+    )
 
-  let conversation = []
-  let recentCards = []
+    console.log(
+      'NEW G2 JARVIS v6 SESSION',
+    )
 
-  let mode = 'SALES'
+    console.log(
+      '==============================\n',
+    )
 
-  let analyzing = false
+    let conversation =
+      []
 
-  let transcriptRevision = 0
-  let analyzedRevision = 0
+    let recentCards =
+      []
 
-  let lastBundleAt = 0
+    let mode =
+      'SALES'
 
-  let manualAskActive = false
-  let manualAskBuffer = []
-  let manualAskTimer = null
+    let analyzing =
+      false
 
-  let noteTaking = false
-  let noteTranscript = []
-  let noteStartedAt = null
+    let transcriptRevision =
+      0
 
-  const MIN_RELEVANCE = 7
+    let analyzedRevision =
+      0
 
-  // Faster than before, but still prevents spam.
-  const BUNDLE_COOLDOWN_MS =
-    10000
+    let lastBundleAt =
+      0
 
-  const MAX_CONVERSATION_ITEMS =
-    60
+    let manualAskActive =
+      false
 
-  // ==================================================
-  // DEEPGRAM
-  // ==================================================
+    let manualAskBuffer =
+      []
 
-  const params =
-    new URLSearchParams({
-      model: 'nova-3',
-      encoding: 'linear16',
-      sample_rate: '16000',
-      channels: '1',
-      interim_results: 'true',
-      smart_format: 'true',
-      endpointing: '300',
-    })
+    let manualAskTimer =
+      null
 
-  const deepgramSocket =
-    new WebSocket(
-      `wss://api.deepgram.com/v1/listen?${params.toString()}`,
-      {
-        headers: {
-          Authorization:
-            `Token ${process.env.DEEPGRAM_API_KEY}`,
+    let noteTaking =
+      false
+
+    let noteTranscript =
+      []
+
+    let noteStartedAt =
+      null
+
+    const MIN_RELEVANCE =
+      7
+
+    const BUNDLE_COOLDOWN_MS =
+      10000
+
+    const MAX_CONVERSATION_ITEMS =
+      60
+
+    // ==================================================
+    // DEEPGRAM
+    // ==================================================
+
+    const params =
+      new URLSearchParams({
+        model:
+          'nova-3',
+
+        encoding:
+          'linear16',
+
+        sample_rate:
+          '16000',
+
+        channels:
+          '1',
+
+        interim_results:
+          'true',
+
+        smart_format:
+          'true',
+
+        endpointing:
+          '300',
+      })
+
+    const deepgramSocket =
+      new WebSocket(
+        `wss://api.deepgram.com/v1/listen?${params.toString()}`,
+        {
+          headers: {
+            Authorization:
+              `Token ${process.env.DEEPGRAM_API_KEY}`,
+          },
         },
+      )
+
+    deepgramSocket.on(
+      'open',
+      () => {
+        console.log(
+          'Deepgram connected',
+        )
       },
     )
 
-  deepgramSocket.on(
-    'open',
-    () => {
-      console.log(
-        'Deepgram connected',
-      )
-    },
-  )
+    // ==================================================
+    // MODE INTELLIGENCE
+    // ==================================================
 
-  // ==================================================
-  // MODE INTELLIGENCE
-  // ==================================================
-
-  function modePrompt() {
-    if (mode === 'GENERAL') {
-      return `
+    function modePrompt() {
+      if (
+        mode ===
+        'GENERAL'
+      ) {
+        return `
 GENERAL MODE
 
 Act like a proactive everyday JARVIS.
@@ -620,20 +822,22 @@ Prioritize:
 - definitions
 - current information
 - claims worth checking
-- helpful responses
+- useful responses
 - interesting connections
 `
-    }
+      }
 
-    if (mode === 'MEETING') {
-      return `
+      if (
+        mode ===
+        'MEETING'
+      ) {
+        return `
 MEETING MODE
 
 Act like a live chief of staff.
 
 Prioritize:
 - decisions
-- unresolved questions
 - commitments
 - owners
 - deadlines
@@ -641,12 +845,17 @@ Prioritize:
 - contradictions
 - missing information
 - action items
+- unresolved questions
 - next steps
+- financial or numerical implications
 `
-    }
+      }
 
-    if (mode === 'SCHOOL') {
-      return `
+      if (
+        mode ===
+        'SCHOOL'
+      ) {
+        return `
 SCHOOL MODE
 
 Act like a proactive tutor.
@@ -657,15 +866,16 @@ Prioritize:
 - formulas
 - explanations
 - examples
-- claims worth clarifying
 - professor emphasis
 - likely testable material
 - conceptual connections
 - useful questions
+- numerical reasoning
+- statistical implications
 `
-    }
+      }
 
-    return `
+      return `
 SALES MODE
 
 Act like an elite technology AE copilot.
@@ -691,33 +901,40 @@ Prioritize:
 - competitors
 - objections
 - next-best actions
-- strong discovery questions
+- useful calculations
+- pricing implications
+- savings
+- annualized spend
+- per-user economics
+- ROI
 `
-  }
+    }
 
-  // ==================================================
-  // JARVIS TRIGGER ENGINE
-  // ==================================================
+    // ==================================================
+    // JARVIS TRIGGER ENGINE
+    // ==================================================
 
-  async function analyzeMoment(
-    context,
-  ) {
-    const response =
-      await anthropic.messages.create({
-        model: 'claude-sonnet-5',
+    async function analyzeMoment(
+      context,
+    ) {
+      const response =
+        await anthropic.messages.create({
+          model:
+            'claude-sonnet-5',
 
-        max_tokens: 600,
+          max_tokens:
+            650,
 
-        system: `
+          system: `
 You are the trigger engine for proactive smart glasses.
 
-Your job is NOT to produce the final HUD response.
+Do NOT produce the final HUD response.
 
-Analyze the newest conversation and identify whether anything is important enough to interrupt the wearer.
+Analyze the newest conversation and decide whether anything is useful enough to interrupt the wearer.
 
 ${modePrompt()}
 
-Detect these signal types:
+Detect:
 
 ENTITY
 NUMBER
@@ -735,19 +952,26 @@ TECHNICAL_CONCEPT
 CURRENT_INFO
 NO_SIGNAL
 
-A signal may require research.
+NUMBERS are especially important when they imply:
+- money
+- savings
+- costs
+- revenue
+- growth
+- percentages
+- licenses
+- users
+- devices
+- quantities
+- dates
+- deadlines
+- ROI
+- probability
+- statistics
+- comparisons
+- monthly vs annual spend
 
-Research is useful when the answer depends on:
-- current company information
-- current executives
-- recent news
-- acquisitions
-- current products
-- current pricing
-- current partnerships
-- recent security events
-- statistics that may have changed
-- factual claims that should be verified
+Research may be useful for facts that depend on current external information.
 
 Return ONLY valid JSON:
 
@@ -756,241 +980,396 @@ Return ONLY valid JSON:
   "relevance": 9,
   "signals": [
     {
-      "type": "BUYING_SIGNAL",
-      "text": "Microsoft agreement renews in November"
-    },
-    {
       "type": "NUMBER",
-      "text": "Cloud spend increased 30%"
+      "text": "8,000 users at $42/user/month"
     }
   ],
-  "research": true,
-  "research_query": "current relevant search query",
-  "reason": "short internal classification"
+  "has_numbers": true,
+  "research": false,
+  "research_query": ""
 }
 
-If nothing deserves attention:
+No signal:
 
 {
   "interrupt": false,
   "relevance": 0,
   "signals": [],
+  "has_numbers": false,
   "research": false,
-  "research_query": "",
-  "reason": ""
+  "research_query": ""
 }
 
-Do not use markdown.
+No markdown.
 `,
 
-        messages: [
-          {
-            role: 'user',
-            content: `
+          messages: [
+            {
+              role:
+                'user',
+
+              content: `
 RECENT CONVERSATION:
 
 ${context}
 `,
-          },
-        ],
-      })
+            },
+          ],
+        })
 
-    return parseClaudeJson(
-      extractText(response),
-    )
-  }
-
-  // ==================================================
-  // OPTIONAL LIVE RESEARCH
-  // ==================================================
-
-  async function researchSignal(
-    trigger,
-  ) {
-    if (
-      !trigger?.research ||
-      !trigger?.research_query
-    ) {
-      return (
-        'No live research performed.'
+      return parseClaudeJson(
+        extractText(
+          response,
+        ),
       )
     }
 
-    try {
+    // ==================================================
+    // NUMERICAL INTELLIGENCE
+    // ==================================================
+
+    async function analyzeNumbers(
+      context,
+      trigger,
+    ) {
+      if (
+        trigger?.has_numbers !==
+        true
+      ) {
+        return {
+          useful: false,
+          relevance: 0,
+          calculations: [],
+          summary: '',
+        }
+      }
+
+      const response =
+        await anthropic.messages.create({
+          model:
+            'claude-sonnet-5',
+
+          max_tokens:
+            650,
+
+          system: `
+You are the numerical intelligence engine for smart glasses.
+
+Extract the meaningful numbers in the conversation and calculate useful implications.
+
+Focus on relationships that are immediately useful.
+
+Examples:
+
+8,000 users × $42/user/month
+= $336,000/month
+= $4,032,000/year
+
+18% discount on $2.4M
+= $432,000 savings
+= $1,968,000 final price
+
+$250K/month cloud spend rising 20%
+= $300K/month
+= $600K additional annual spend
+
+A 90-day deadline beginning September 1
+= approximately November 30.
+
+Rules:
+
+- Only calculate when the relationship is supported by the conversation.
+- Do not guess missing numbers.
+- Do not invent assumptions unless clearly labeled.
+- Prefer exact arithmetic when possible.
+- Round sensibly for HUD use.
+- Highlight business, statistical, financial, or timeline significance.
+- If the numbers are trivial or not useful, return useful=false.
+
+Return ONLY valid JSON:
+
+{
+  "useful": true,
+  "relevance": 9,
+  "calculations": [
+    {
+      "label": "Annual spend",
+      "expression": "8000 × 42 × 12",
+      "result": "$4.032M/year"
+    }
+  ],
+  "summary": "At 8,000 users, $42/user/month equals about $4.03M annually."
+}
+
+If no useful calculation:
+
+{
+  "useful": false,
+  "relevance": 0,
+  "calculations": [],
+  "summary": ""
+}
+
+No markdown.
+`,
+
+          messages: [
+            {
+              role:
+                'user',
+
+              content: `
+CONVERSATION:
+
+${context}
+
+DETECTED SIGNALS:
+
+${JSON.stringify(
+  trigger?.signals ||
+    [],
+)}
+`,
+            },
+          ],
+        })
+
+      const parsed =
+        parseClaudeJson(
+          extractText(
+            response,
+          ),
+        )
+
+      if (!parsed) {
+        return {
+          useful: false,
+          relevance: 0,
+          calculations: [],
+          summary: '',
+        }
+      }
+
       console.log(
-        'JARVIS RESEARCH:',
-        trigger.research_query,
+        'NUMERICAL INTELLIGENCE:',
+        JSON.stringify(
+          parsed,
+        ),
       )
 
-      const result =
-        await tvly.search(
+      return parsed
+    }
+
+    // ==================================================
+    // OPTIONAL LIVE RESEARCH
+    // ==================================================
+
+    async function researchSignal(
+      trigger,
+    ) {
+      if (
+        !trigger?.research ||
+        !trigger
+          ?.research_query
+      ) {
+        return (
+          'No live research performed.'
+        )
+      }
+
+      try {
+        console.log(
+          'JARVIS RESEARCH:',
           trigger.research_query,
-          {
-            searchDepth:
-              'basic',
-
-            maxResults:
-              5,
-
-            includeAnswer:
-              true,
-          },
         )
 
-      const results =
-        (
-          result.results ||
-          []
-        )
-          .slice(0, 5)
-          .map(
-            (
-              item,
-              index,
-            ) =>
-              [
-                `SOURCE ${index + 1}`,
-                `Title: ${item.title || ''}`,
-                `Content: ${item.content || ''}`,
-              ].join('\n'),
+        const result =
+          await tvly.search(
+            trigger.research_query,
+            {
+              searchDepth:
+                'basic',
+
+              maxResults:
+                5,
+
+              includeAnswer:
+                true,
+            },
           )
-          .join('\n\n')
 
-      return `
+        const results =
+          (
+            result.results ||
+            []
+          )
+            .slice(
+              0,
+              5,
+            )
+            .map(
+              (
+                item,
+                index,
+              ) =>
+                [
+                  `SOURCE ${index + 1}`,
+                  `Title: ${item.title || ''}`,
+                  `Content: ${item.content || ''}`,
+                ].join(
+                  '\n',
+                ),
+            )
+            .join(
+              '\n\n',
+            )
+
+        return `
 LIVE RESEARCH SUMMARY:
 ${result.answer || 'None'}
 
 RESULTS:
 ${results}
 `
-    } catch (error) {
-      console.error(
-        'JARVIS RESEARCH ERROR:',
-        error,
-      )
+      } catch (
+        error
+      ) {
+        console.error(
+          'JARVIS RESEARCH ERROR:',
+          error,
+        )
 
-      return (
-        'Live research failed.'
-      )
+        return (
+          'Live research failed.'
+        )
+      }
     }
-  }
 
-  // ==================================================
-  // CARD BUNDLE GENERATOR
-  // ==================================================
+    // ==================================================
+    // CARD BUNDLE GENERATOR
+    // ==================================================
 
-  async function generateBundle(
-    context,
-    trigger,
-    research,
-  ) {
-    const recent =
-      recentCards
-        .slice(-10)
-        .map(card => {
-          if (
-            card.type ===
-            'QUESTIONS'
-          ) {
-            return (
-              'QUESTIONS: ' +
-              (
-                card.questions ||
-                []
-              ).join(' | ')
-            )
-          }
-
-          return (
-            `${card.type}: ` +
-            `${card.body || ''}`
+    async function generateBundle(
+      context,
+      trigger,
+      numericalIntel,
+      research,
+    ) {
+      const recent =
+        recentCards
+          .slice(
+            -10,
           )
-        })
-        .join('\n')
+          .map(
+            card => {
+              if (
+                card.type ===
+                'QUESTIONS'
+              ) {
+                return (
+                  'QUESTIONS: ' +
+                  (
+                    card.questions ||
+                    []
+                  ).join(
+                    ' | ',
+                  )
+                )
+              }
 
-    const response =
-      await anthropic.messages.create({
-        model: 'claude-sonnet-5',
+              return (
+                `${card.type}: ` +
+                `${card.body || ''}`
+              )
+            },
+          )
+          .join(
+            '\n',
+          )
 
-        max_tokens: 900,
+      const response =
+        await anthropic.messages.create({
+          model:
+            'claude-sonnet-5',
 
-        system: `
+          max_tokens:
+            1000,
+
+          system: `
 You create compact card bundles for smart glasses.
 
 ${modePrompt()}
 
 You receive:
-- recent conversation
-- detected signals
+- conversation
+- trigger analysis
+- numerical intelligence
 - optional live research
 
 Return 1 to 3 cards.
 
-Possible card types:
+Card types:
 
 KNOW_THIS
 QUESTIONS
 SAY_THIS
 
-The bundle should be intentionally useful, not repetitive.
+==================================================
+NUMERICAL INTELLIGENCE
+==================================================
+
+When the numerical engine produced a useful calculation, strongly consider a KNOW_THIS card containing the most valuable calculation.
+
+Example:
+
+{
+  "type": "KNOW_THIS",
+  "relevance": 10,
+  "body": "8,000 users at $42/month equals about $4.03M annually."
+}
+
+Do not clutter the HUD with trivial arithmetic.
 
 ==================================================
 SALES
 ==================================================
 
-For a strong sales moment, prefer:
+For a strong sales moment, usually prefer:
 
-1. KNOW_THIS
-2. QUESTIONS
-3. SAY_THIS
-
-But only include cards that genuinely help.
-
-KNOW_THIS examples:
-- buying signal
-- account intelligence
-- competitive context
-- opportunity
-- risk
-
-QUESTIONS:
-Give 2 or 3 concise discovery questions.
-
-SAY_THIS:
-Give one short line the wearer could naturally say.
+1. KNOW_THIS — implication / buying signal / useful math
+2. QUESTIONS — discovery
+3. SAY_THIS — natural next statement
 
 ==================================================
 MEETING
 ==================================================
 
 Prefer:
-1. KNOW_THIS for decision/risk
-2. QUESTIONS for unresolved issues
-3. SAY_THIS for a useful next-step statement
+1. KNOW_THIS — decision/risk/numeric implication
+2. QUESTIONS — unresolved issues
+3. SAY_THIS — next-step statement
 
 ==================================================
 SCHOOL
 ==================================================
 
 Prefer:
-1. KNOW_THIS for explanation/concept
-2. KNOW_THIS for connection/example if useful
-3. QUESTIONS for useful questions to ask
-
-Do not make School mode sound like sales.
+1. KNOW_THIS — concept/explanation
+2. KNOW_THIS — calculation or connection
+3. QUESTIONS — questions worth asking
 
 ==================================================
 GENERAL
 ==================================================
 
 Prefer:
-1. KNOW_THIS for fact/context
-2. KNOW_THIS for connection/current information
-3. SAY_THIS or QUESTIONS only when useful
+1. KNOW_THIS — useful fact/math
+2. KNOW_THIS — context
+3. SAY_THIS or QUESTIONS when useful
 
 ==================================================
-
-HUD rules:
+HUD LIMITS
+==================================================
 
 KNOW_THIS:
 maximum 25 words
@@ -1010,462 +1389,530 @@ Return ONLY valid JSON:
       "type": "KNOW_THIS",
       "relevance": 9,
       "body": "..."
-    },
-    {
-      "type": "QUESTIONS",
-      "relevance": 9,
-      "questions": [
-        "...",
-        "...",
-        "..."
-      ]
-    },
-    {
-      "type": "SAY_THIS",
-      "relevance": 8,
-      "body": "..."
     }
   ]
 }
 
-Rules:
+Maximum 3 cards.
 
-- Maximum 3 cards.
-- Minimum relevance 7.
-- Do not repeat recent cards.
-- Do not fabricate research facts.
-- If only one card is useful, return one.
-- If nothing useful remains, return {"cards":[]}.
-- No markdown.
+Minimum relevance 7.
+
+Do not repeat recent cards.
+
+Do not fabricate facts.
+
+No markdown.
 `,
 
-        messages: [
-          {
-            role: 'user',
+          messages: [
+            {
+              role:
+                'user',
 
-            content: `
+              content: `
 CONVERSATION:
 
 ${context}
 
-TRIGGER ANALYSIS:
+TRIGGER:
 
-${JSON.stringify(trigger)}
+${JSON.stringify(
+  trigger,
+)}
+
+NUMERICAL INTELLIGENCE:
+
+${JSON.stringify(
+  numericalIntel,
+)}
 
 LIVE RESEARCH:
 
 ${research}
 
-RECENT CARDS ALREADY SHOWN:
+RECENT CARDS:
 
 ${recent || 'None'}
 `,
-          },
-        ],
-      })
+            },
+          ],
+        })
 
-    return parseClaudeJson(
-      extractText(response),
-    )
-  }
-
-  // ==================================================
-  // SEND BUNDLE
-  // ==================================================
-
-  function normalizeCard(card) {
-    if (!card) {
-      return null
+      return parseClaudeJson(
+        extractText(
+          response,
+        ),
+      )
     }
 
-    const relevance =
-      Number(card.relevance || 0)
+    // ==================================================
+    // CARD NORMALIZATION
+    // ==================================================
 
-    if (
-      relevance <
-      MIN_RELEVANCE
+    function normalizeCard(
+      card,
     ) {
-      return null
-    }
+      if (!card) {
+        return null
+      }
 
-    if (
-      card.type ===
-      'QUESTIONS'
-    ) {
-      const questions =
-        Array.isArray(
-          card.questions,
+      const relevance =
+        Number(
+          card.relevance ||
+            0,
         )
-          ? card.questions
-              .map(q =>
-                String(q).trim(),
-              )
-              .filter(Boolean)
-              .slice(0, 3)
-          : []
 
       if (
-        questions.length < 2
+        relevance <
+        MIN_RELEVANCE
       ) {
         return null
       }
 
-      return {
-        type: 'QUESTIONS',
-        relevance,
-        questions,
+      if (
+        card.type ===
+        'QUESTIONS'
+      ) {
+        const questions =
+          Array.isArray(
+            card.questions,
+          )
+            ? card.questions
+                .map(
+                  q =>
+                    String(
+                      q,
+                    ).trim(),
+                )
+                .filter(
+                  Boolean,
+                )
+                .slice(
+                  0,
+                  3,
+                )
+            : []
+
+        if (
+          questions.length <
+          2
+        ) {
+          return null
+        }
+
+        return {
+          type:
+            'QUESTIONS',
+
+          relevance,
+
+          questions,
+        }
       }
+
+      if (
+        card.type ===
+          'KNOW_THIS' ||
+        card.type ===
+          'SAY_THIS'
+      ) {
+        const body =
+          String(
+            card.body ||
+              '',
+          ).trim()
+
+        if (!body) {
+          return null
+        }
+
+        return {
+          type:
+            card.type,
+
+          relevance,
+
+          body,
+        }
+      }
+
+      return null
     }
 
-    if (
-      card.type ===
-        'KNOW_THIS' ||
-      card.type ===
-        'SAY_THIS'
+    function cardSignature(
+      card,
     ) {
-      const body =
-        String(
-          card.body || '',
-        ).trim()
-
-      if (!body) {
-        return null
+      if (
+        card.type ===
+        'QUESTIONS'
+      ) {
+        return (
+          card.questions ||
+          []
+        )
+          .join(' ')
+          .toLowerCase()
+          .replace(
+            /\s+/g,
+            ' ',
+          )
+          .trim()
       }
 
-      return {
-        type: card.type,
-        relevance,
-        body,
-      }
-    }
-
-    return null
-  }
-
-  function cardSignature(
-    card,
-  ) {
-    if (
-      card.type ===
-      'QUESTIONS'
-    ) {
-      return (
-        card.questions ||
-        []
+      return String(
+        card.body ||
+          '',
       )
-        .join(' ')
         .toLowerCase()
-        .replace(/\s+/g, ' ')
+        .replace(
+          /\s+/g,
+          ' ',
+        )
         .trim()
     }
 
-    return String(
-      card.body || '',
-    )
-      .toLowerCase()
-      .replace(/\s+/g, ' ')
-      .trim()
-  }
-
-  function isDuplicateCard(
-    card,
-  ) {
-    const signature =
-      cardSignature(card)
-
-    return recentCards.some(
-      old => {
-        const oldSignature =
-          cardSignature(old)
-
-        return (
-          oldSignature ===
-            signature ||
-          oldSignature.includes(
-            signature,
-          ) ||
-          signature.includes(
-            oldSignature,
-          )
-        )
-      },
-    )
-  }
-
-  function sendBundle(
-    cards,
-  ) {
-    const cleanCards =
-      cards
-        .map(
-          normalizeCard,
-        )
-        .filter(Boolean)
-        .filter(
-          card =>
-            !isDuplicateCard(
-              card,
-            ),
-        )
-        .slice(0, 3)
-
-    if (
-      cleanCards.length ===
-      0
+    function isDuplicateCard(
+      card,
     ) {
-      console.log(
-        'JARVIS: no usable cards',
-      )
-      return
-    }
-
-    if (
-      g2Socket.readyState !==
-      WebSocket.OPEN
-    ) {
-      return
-    }
-
-    // Existing main.ts understands individual "card" messages,
-    // so send them one after another.
-    for (
-      const card of
-      cleanCards
-    ) {
-      g2Socket.send(
-        JSON.stringify({
-          type: 'card',
+      const signature =
+        cardSignature(
           card,
-        }),
-      )
-
-      recentCards.push(
-        card,
-      )
-
-      console.log(
-        'JARVIS CARD SENT:',
-        card.type,
-      )
-    }
-
-    if (
-      recentCards.length >
-      20
-    ) {
-      recentCards =
-        recentCards.slice(-20)
-    }
-
-    lastBundleAt =
-      Date.now()
-  }
-
-  // ==================================================
-  // JARVIS ANALYSIS LOOP
-  // ==================================================
-
-  async function runAnalysisLoop() {
-    if (
-      analyzing ||
-      manualAskActive
-    ) {
-      return
-    }
-
-    analyzing = true
-
-    try {
-      while (
-        analyzedRevision <
-        transcriptRevision
-      ) {
-        const targetRevision =
-          transcriptRevision
-
-        const context =
-          conversation.join(
-            '\n',
-          )
-
-        try {
-          const trigger =
-            await analyzeMoment(
-              context,
-            )
-
-          console.log(
-            'JARVIS TRIGGER:',
-            JSON.stringify(
-              trigger,
-            ),
-          )
-
-          if (
-            !trigger ||
-            trigger.interrupt !==
-              true ||
-            Number(
-              trigger.relevance ||
-                0,
-            ) <
-              MIN_RELEVANCE
-          ) {
-            analyzedRevision =
-              targetRevision
-            continue
-          }
-
-          if (
-            Date.now() -
-              lastBundleAt <
-            BUNDLE_COOLDOWN_MS
-          ) {
-            console.log(
-              'JARVIS cooldown active',
-            )
-
-            analyzedRevision =
-              targetRevision
-            continue
-          }
-
-          const research =
-            await researchSignal(
-              trigger,
-            )
-
-          const bundle =
-            await generateBundle(
-              context,
-              trigger,
-              research,
-            )
-
-          if (
-            Array.isArray(
-              bundle?.cards,
-            )
-          ) {
-            sendBundle(
-              bundle.cards,
-            )
-          }
-        } catch (error) {
-          console.error(
-            'JARVIS ANALYSIS ERROR:',
-            error,
-          )
-        }
-
-        analyzedRevision =
-          targetRevision
-      }
-    } finally {
-      analyzing = false
-
-      if (
-        analyzedRevision <
-          transcriptRevision &&
-        !manualAskActive
-      ) {
-        runAnalysisLoop()
-      }
-    }
-  }
-
-  // ==================================================
-  // NOTES ROUTING
-  // ==================================================
-
-  async function determineNoteRoute(
-    transcript,
-  ) {
-    if (
-      mode === 'SCHOOL'
-    ) {
-      const course =
-        await classifySchoolCourse(
-          transcript,
         )
 
-      return {
-        area: 'SCHOOL',
-        course,
-      }
+      return recentCards.some(
+        old => {
+          const oldSignature =
+            cardSignature(
+              old,
+            )
+
+          return (
+            oldSignature ===
+              signature ||
+            oldSignature.includes(
+              signature,
+            ) ||
+            signature.includes(
+              oldSignature,
+            )
+          )
+        },
+      )
     }
 
-    if (
-      mode === 'SALES' ||
-      mode === 'MEETING'
+    function sendBundle(
+      cards,
     ) {
-      return {
-        area: 'WORK',
-        course: null,
-      }
-    }
+      const cleanCards =
+        cards
+          .map(
+            normalizeCard,
+          )
+          .filter(
+            Boolean,
+          )
+          .filter(
+            card =>
+              !isDuplicateCard(
+                card,
+              ),
+          )
+          .slice(
+            0,
+            3,
+          )
 
-    return {
-      area: 'GENERAL',
-      course: null,
-    }
-  }
-
-  // ==================================================
-  // NOTES GENERATOR
-  // ==================================================
-
-  async function generateNotes() {
-    if (
-      noteTranscript.length ===
-      0
-    ) {
       if (
-        g2Socket.readyState ===
+        cleanCards.length ===
+        0
+      ) {
+        console.log(
+          'JARVIS: no usable cards',
+        )
+
+        return
+      }
+
+      if (
+        g2Socket.readyState !==
         WebSocket.OPEN
+      ) {
+        return
+      }
+
+      for (
+        const card of
+        cleanCards
       ) {
         g2Socket.send(
           JSON.stringify({
             type:
-              'notes_error',
-            text:
-              'No speech was captured.',
+              'card',
+
+            card,
           }),
+        )
+
+        recentCards.push(
+          card,
+        )
+
+        console.log(
+          'JARVIS CARD SENT:',
+          card.type,
         )
       }
 
-      return
+      if (
+        recentCards.length >
+        20
+      ) {
+        recentCards =
+          recentCards.slice(
+            -20,
+          )
+      }
+
+      lastBundleAt =
+        Date.now()
     }
 
-    const transcript =
-      noteTranscript.join(
-        '\n',
-      )
+    // ==================================================
+    // JARVIS ANALYSIS LOOP
+    // ==================================================
 
-    try {
-      const route =
-        await determineNoteRoute(
-          transcript,
+    async function runAnalysisLoop() {
+      if (
+        analyzing ||
+        manualAskActive
+      ) {
+        return
+      }
+
+      analyzing =
+        true
+
+      try {
+        while (
+          analyzedRevision <
+          transcriptRevision
+        ) {
+          const targetRevision =
+            transcriptRevision
+
+          const context =
+            conversation.join(
+              '\n',
+            )
+
+          try {
+            const trigger =
+              await analyzeMoment(
+                context,
+              )
+
+            console.log(
+              'JARVIS TRIGGER:',
+              JSON.stringify(
+                trigger,
+              ),
+            )
+
+            if (
+              !trigger ||
+              trigger.interrupt !==
+                true ||
+              Number(
+                trigger.relevance ||
+                  0,
+              ) <
+                MIN_RELEVANCE
+            ) {
+              analyzedRevision =
+                targetRevision
+
+              continue
+            }
+
+            if (
+              Date.now() -
+                lastBundleAt <
+              BUNDLE_COOLDOWN_MS
+            ) {
+              console.log(
+                'JARVIS cooldown active',
+              )
+
+              analyzedRevision =
+                targetRevision
+
+              continue
+            }
+
+            // Numerical analysis and web research
+            // can happen independently.
+            const [
+              numericalIntel,
+              research,
+            ] =
+              await Promise.all([
+                analyzeNumbers(
+                  context,
+                  trigger,
+                ),
+
+                researchSignal(
+                  trigger,
+                ),
+              ])
+
+            const bundle =
+              await generateBundle(
+                context,
+                trigger,
+                numericalIntel,
+                research,
+              )
+
+            if (
+              Array.isArray(
+                bundle?.cards,
+              )
+            ) {
+              sendBundle(
+                bundle.cards,
+              )
+            }
+          } catch (
+            error
+          ) {
+            console.error(
+              'JARVIS ANALYSIS ERROR:',
+              error,
+            )
+          }
+
+          analyzedRevision =
+            targetRevision
+        }
+      } finally {
+        analyzing =
+          false
+
+        if (
+          analyzedRevision <
+            transcriptRevision &&
+          !manualAskActive
+        ) {
+          runAnalysisLoop()
+        }
+      }
+    }
+
+    // ==================================================
+    // NOTES ROUTING
+    // ==================================================
+
+    async function determineNoteRoute(
+      transcript,
+    ) {
+      if (
+        mode ===
+        'SCHOOL'
+      ) {
+        const course =
+          await classifySchoolCourse(
+            transcript,
+          )
+
+        return {
+          area:
+            'SCHOOL',
+
+          course,
+        }
+      }
+
+      if (
+        mode ===
+          'SALES' ||
+        mode ===
+          'MEETING'
+      ) {
+        return {
+          area:
+            'WORK',
+
+          course:
+            null,
+        }
+      }
+
+      return {
+        area:
+          'GENERAL',
+
+        course:
+          null,
+      }
+    }
+
+    // ==================================================
+    // NOTES
+    // ==================================================
+
+    async function generateNotes() {
+      if (
+        noteTranscript.length ===
+        0
+      ) {
+        if (
+          g2Socket.readyState ===
+          WebSocket.OPEN
+        ) {
+          g2Socket.send(
+            JSON.stringify({
+              type:
+                'notes_error',
+
+              text:
+                'No speech was captured.',
+            }),
+          )
+        }
+
+        return
+      }
+
+      const transcript =
+        noteTranscript.join(
+          '\n',
         )
 
-      const response =
-        await anthropic.messages.create({
-          model:
-            'claude-sonnet-5',
+      try {
+        const route =
+          await determineNoteRoute(
+            transcript,
+          )
 
-          max_tokens:
-            5000,
+        const response =
+          await anthropic.messages.create({
+            model:
+              'claude-sonnet-5',
 
-          system: `
+            max_tokens:
+              5000,
+
+            system: `
 You are an expert AI note taker.
 
-Turn the transcript into highly organized, polished notes.
+Turn this transcript into polished, highly understandable notes.
 
 MODE:
 ${mode}
 
 Remove filler and repetition.
-Do not invent facts.
+Do not invent information.
 Organize by topic.
 
 SCHOOL:
@@ -1480,7 +1927,11 @@ Include executive summary, customer situation, pain points, technical environmen
 GENERAL:
 Organize the important ideas clearly.
 
-EVERY NOTE MUST END WITH:
+==================================================
+MANDATORY ENDING
+==================================================
+
+Every note MUST end with:
 
 AI SUMMARY & EXPLANATION
 
@@ -1491,11 +1942,13 @@ Include:
 3. Most Important Things to Remember
 4. Connections
 
-SCHOOL also:
+For SCHOOL:
 5. How to Study This
 
-SALES/MEETING also:
+For SALES or MEETING:
 5. What I Would Do Next
+
+Also explain any important calculations or numerical implications discussed during the session.
 
 Return ONLY valid JSON:
 
@@ -1508,187 +1961,208 @@ Return ONLY valid JSON:
 No markdown fences.
 `,
 
-          messages: [
-            {
-              role: 'user',
+            messages: [
+              {
+                role:
+                  'user',
 
-              content: `
+                content: `
 TRANSCRIPT:
 
 ${transcript}
 `,
-            },
-          ],
-        })
+              },
+            ],
+          })
 
-      const parsed =
-        parseClaudeJson(
-          extractText(
-            response,
-          ),
-        )
+        const parsed =
+          parseClaudeJson(
+            extractText(
+              response,
+            ),
+          )
 
-      if (
-        !parsed?.title ||
-        !parsed?.html
-      ) {
-        throw new Error(
-          'Invalid AI notes output',
-        )
-      }
+        if (
+          !parsed?.title ||
+          !parsed?.html
+        ) {
+          throw new Error(
+            'Invalid AI notes output',
+          )
+        }
 
-      const destination =
-        await getDriveDestination(
-          route,
-        )
+        const destination =
+          await getDriveDestination(
+            route,
+          )
 
-      const date =
-        new Date()
-          .toISOString()
-          .slice(0, 10)
+        const date =
+          new Date()
+            .toISOString()
+            .slice(
+              0,
+              10,
+            )
 
-      const title =
-        `${date} — ${String(
-          parsed.title,
-        ).trim()}`
+        const title =
+          `${date} — ${String(
+            parsed.title,
+          ).trim()}`
 
-      const doc =
-        await createGoogleDoc(
+        const doc =
+          await createGoogleDoc(
+            title,
+            parsed.html,
+            destination.folder,
+          )
+
+        console.log(
+          'GOOGLE DOC SAVED:',
           title,
-          parsed.html,
-          destination.folder,
         )
 
-      console.log(
-        'GOOGLE DOC SAVED:',
-        title,
-      )
+        console.log(
+          'DESTINATION:',
+          destination.path,
+        )
 
-      console.log(
-        'DESTINATION:',
-        destination.path,
-      )
+        if (
+          g2Socket.readyState ===
+          WebSocket.OPEN
+        ) {
+          g2Socket.send(
+            JSON.stringify({
+              type:
+                'notes_saved',
 
-      if (
-        g2Socket.readyState ===
-        WebSocket.OPEN
+              title:
+                parsed.title,
+
+              folder:
+                destination.path,
+
+              summary:
+                parsed.summary ||
+                '',
+
+              url:
+                doc.webViewLink ||
+                '',
+            }),
+          )
+        }
+      } catch (
+        error
       ) {
-        g2Socket.send(
-          JSON.stringify({
-            type:
-              'notes_saved',
-
-            title:
-              parsed.title,
-
-            folder:
-              destination.path,
-
-            summary:
-              parsed.summary ||
-              '',
-
-            url:
-              doc.webViewLink ||
-              '',
-          }),
+        console.error(
+          'NOTE SAVE ERROR:',
+          error,
         )
-      }
-    } catch (error) {
-      console.error(
-        'NOTE SAVE ERROR:',
-        error,
-      )
 
-      if (
-        g2Socket.readyState ===
-        WebSocket.OPEN
-      ) {
-        g2Socket.send(
-          JSON.stringify({
-            type:
-              'notes_error',
+        if (
+          g2Socket.readyState ===
+          WebSocket.OPEN
+        ) {
+          g2Socket.send(
+            JSON.stringify({
+              type:
+                'notes_error',
 
-            text:
-              'Could not save notes.',
-          }),
-        )
+              text:
+                'Could not save notes.',
+            }),
+          )
+        }
       }
     }
-  }
 
-  function startNotes() {
-    if (noteTaking) {
-      return
+    function startNotes() {
+      if (
+        noteTaking
+      ) {
+        return
+      }
+
+      noteTaking =
+        true
+
+      noteTranscript =
+        []
+
+      noteStartedAt =
+        new Date()
+
+      g2Socket.send(
+        JSON.stringify({
+          type:
+            'notes_started',
+        }),
+      )
     }
 
-    noteTaking = true
-    noteTranscript = []
-    noteStartedAt =
-      new Date()
+    async function stopNotes() {
+      if (
+        !noteTaking
+      ) {
+        return
+      }
 
-    g2Socket.send(
-      JSON.stringify({
-        type:
-          'notes_started',
-      }),
-    )
-  }
+      noteTaking =
+        false
 
-  async function stopNotes() {
-    if (!noteTaking) {
-      return
+      g2Socket.send(
+        JSON.stringify({
+          type:
+            'notes_processing',
+        }),
+      )
+
+      await generateNotes()
+
+      noteTranscript =
+        []
+
+      noteStartedAt =
+        null
     }
 
-    noteTaking = false
+    // ==================================================
+    // MANUAL ASK
+    // ==================================================
 
-    g2Socket.send(
-      JSON.stringify({
-        type:
-          'notes_processing',
-      }),
-    )
+    async function answerManualAsk(
+      question,
+    ) {
+      const response =
+        await anthropic.messages.create({
+          model:
+            'claude-sonnet-5',
 
-    await generateNotes()
+          max_tokens:
+            450,
 
-    noteTranscript = []
-    noteStartedAt = null
-  }
-
-  // ==================================================
-  // MANUAL ASK
-  // ==================================================
-
-  async function answerManualAsk(
-    question,
-  ) {
-    const response =
-      await anthropic.messages.create({
-        model:
-          'claude-sonnet-5',
-
-        max_tokens:
-          400,
-
-        system: `
+          system: `
 You are answering a direct smart-glasses question.
 
 ${modePrompt()}
 
-Use conversation context when relevant.
+Use the conversation context when relevant.
 
-Maximum 60 words.
+If the question involves numbers, calculate the answer carefully.
+
+Maximum 65 words.
 
 If the user asks for options, give up to 3.
 
 Be direct.
 `,
 
-        messages: [
-          {
-            role: 'user',
+          messages: [
+            {
+              role:
+                'user',
 
-            content: `
+              content: `
 CONVERSATION:
 
 ${conversation.join('\n')}
@@ -1697,324 +2171,372 @@ QUESTION:
 
 ${question}
 `,
-          },
-        ],
-      })
+            },
+          ],
+        })
 
-    const answer =
-      extractText(
-        response,
-      )
-
-    if (
-      g2Socket.readyState ===
-      WebSocket.OPEN
-    ) {
-      g2Socket.send(
-        JSON.stringify({
-          type:
-            'manual_answer',
-          text:
-            answer,
-        }),
-      )
-    }
-  }
-
-  function finishManualAsk() {
-    if (!manualAskActive) {
-      return
-    }
-
-    if (manualAskTimer) {
-      clearTimeout(
-        manualAskTimer,
-      )
-    }
-
-    const question =
-      manualAskBuffer
-        .join(' ')
-        .trim()
-
-    manualAskActive = false
-    manualAskBuffer = []
-
-    if (question) {
-      answerManualAsk(
-        question,
-      )
-    }
-  }
-
-  function scheduleManualAskFinish() {
-    if (manualAskTimer) {
-      clearTimeout(
-        manualAskTimer,
-      )
-    }
-
-    manualAskTimer =
-      setTimeout(
-        finishManualAsk,
-        1400,
-      )
-  }
-
-  // ==================================================
-  // TRANSCRIPTS
-  // ==================================================
-
-  deepgramSocket.on(
-    'message',
-    data => {
-      try {
-        const message =
-          JSON.parse(
-            data.toString(),
-          )
-
-        const transcript =
-          message.channel
-            ?.alternatives?.[0]
-            ?.transcript
-
-        if (!transcript) {
-          return
-        }
-
-        console.log(
-          'TRANSCRIPT:',
-          transcript,
+      const answer =
+        extractText(
+          response,
         )
-
-        if (!message.is_final) {
-          return
-        }
-
-        if (noteTaking) {
-          noteTranscript.push(
-            transcript,
-          )
-        }
-
-        if (
-          manualAskActive
-        ) {
-          manualAskBuffer.push(
-            transcript,
-          )
-
-          scheduleManualAskFinish()
-
-          return
-        }
-
-        conversation.push(
-          transcript,
-        )
-
-        if (
-          conversation.length >
-          MAX_CONVERSATION_ITEMS
-        ) {
-          conversation =
-            conversation.slice(
-              -MAX_CONVERSATION_ITEMS,
-            )
-        }
-
-        transcriptRevision +=
-          1
-
-        runAnalysisLoop()
-      } catch (error) {
-        console.error(
-          'Deepgram message error:',
-          error,
-        )
-      }
-    },
-  )
-
-  // ==================================================
-  // CONTROLS
-  // ==================================================
-
-  function handleControlMessage(
-    payload,
-  ) {
-    if (
-      payload.type ===
-      'set_mode'
-    ) {
-      const requested =
-        String(
-          payload.mode || '',
-        ).toUpperCase()
 
       if (
-        [
-          'SALES',
-          'GENERAL',
-          'MEETING',
-          'SCHOOL',
-        ].includes(
-          requested,
-        )
+        g2Socket.readyState ===
+        WebSocket.OPEN
       ) {
-        mode = requested
-
-        console.log(
-          'MODE:',
-          mode,
-        )
-
         g2Socket.send(
           JSON.stringify({
             type:
-              'mode_changed',
-            mode,
+              'manual_answer',
+
+            text:
+              answer,
           }),
         )
       }
-
-      return
     }
 
-    if (
-      payload.type ===
-      'manual_ask_start'
-    ) {
-      manualAskActive = true
-      manualAskBuffer = []
-      return
-    }
-
-    if (
-      payload.type ===
-      'manual_ask_cancel'
-    ) {
-      manualAskActive = false
-      manualAskBuffer = []
-      return
-    }
-
-    if (
-      payload.type ===
-      'notes_start'
-    ) {
-      startNotes()
-      return
-    }
-
-    if (
-      payload.type ===
-      'notes_stop'
-    ) {
-      stopNotes()
-      return
-    }
-  }
-
-  // ==================================================
-  // G2 SOCKET
-  // ==================================================
-
-  g2Socket.on(
-    'message',
-    data => {
+    function finishManualAsk() {
       if (
-        Buffer.isBuffer(data)
+        !manualAskActive
       ) {
-        const text =
-          data.toString(
-            'utf8',
-          )
-
-        if (
-          text.startsWith('{')
-        ) {
-          try {
-            handleControlMessage(
-              JSON.parse(text),
-            )
-
-            return
-          } catch {
-            // audio
-          }
-        }
+        return
       }
 
       if (
-        deepgramSocket.readyState ===
-        WebSocket.OPEN
+        manualAskTimer
       ) {
-        deepgramSocket.send(
-          data,
-        )
-      }
-    },
-  )
-
-  g2Socket.on(
-    'close',
-    () => {
-      if (
-        noteTaking &&
-        noteTranscript.length >
-          0
-      ) {
-        noteTaking = false
-
-        generateNotes()
-          .catch(
-            console.error,
-          )
-      }
-
-      if (manualAskTimer) {
         clearTimeout(
           manualAskTimer,
         )
       }
 
-      if (
-        deepgramSocket.readyState ===
-          WebSocket.OPEN ||
-        deepgramSocket.readyState ===
-          WebSocket.CONNECTING
-      ) {
-        deepgramSocket.close()
-      }
-    },
-  )
+      const question =
+        manualAskBuffer
+          .join(' ')
+          .trim()
 
-  deepgramSocket.on(
-    'error',
-    error => {
-      console.error(
-        'Deepgram error:',
-        error,
-      )
-    },
-  )
-})
+      manualAskActive =
+        false
+
+      manualAskBuffer =
+        []
+
+      if (
+        question
+      ) {
+        answerManualAsk(
+          question,
+        )
+      }
+    }
+
+    function scheduleManualAskFinish() {
+      if (
+        manualAskTimer
+      ) {
+        clearTimeout(
+          manualAskTimer,
+        )
+      }
+
+      manualAskTimer =
+        setTimeout(
+          finishManualAsk,
+          1400,
+        )
+    }
+
+    // ==================================================
+    // TRANSCRIPTS
+    // ==================================================
+
+    deepgramSocket.on(
+      'message',
+      data => {
+        try {
+          const message =
+            JSON.parse(
+              data.toString(),
+            )
+
+          const transcript =
+            message.channel
+              ?.alternatives?.[0]
+              ?.transcript
+
+          if (
+            !transcript
+          ) {
+            return
+          }
+
+          console.log(
+            'TRANSCRIPT:',
+            transcript,
+          )
+
+          if (
+            !message.is_final
+          ) {
+            return
+          }
+
+          if (
+            noteTaking
+          ) {
+            noteTranscript.push(
+              transcript,
+            )
+          }
+
+          if (
+            manualAskActive
+          ) {
+            manualAskBuffer.push(
+              transcript,
+            )
+
+            scheduleManualAskFinish()
+
+            return
+          }
+
+          conversation.push(
+            transcript,
+          )
+
+          if (
+            conversation.length >
+            MAX_CONVERSATION_ITEMS
+          ) {
+            conversation =
+              conversation.slice(
+                -MAX_CONVERSATION_ITEMS,
+              )
+          }
+
+          transcriptRevision +=
+            1
+
+          runAnalysisLoop()
+        } catch (
+          error
+        ) {
+          console.error(
+            'Deepgram message error:',
+            error,
+          )
+        }
+      },
+    )
+
+    // ==================================================
+    // CONTROLS
+    // ==================================================
+
+    function handleControlMessage(
+      payload,
+    ) {
+      if (
+        payload.type ===
+        'set_mode'
+      ) {
+        const requested =
+          String(
+            payload.mode ||
+              '',
+          ).toUpperCase()
+
+        if (
+          [
+            'SALES',
+            'GENERAL',
+            'MEETING',
+            'SCHOOL',
+          ].includes(
+            requested,
+          )
+        ) {
+          mode =
+            requested
+
+          console.log(
+            'MODE:',
+            mode,
+          )
+
+          g2Socket.send(
+            JSON.stringify({
+              type:
+                'mode_changed',
+
+              mode,
+            }),
+          )
+        }
+
+        return
+      }
+
+      if (
+        payload.type ===
+        'manual_ask_start'
+      ) {
+        manualAskActive =
+          true
+
+        manualAskBuffer =
+          []
+
+        return
+      }
+
+      if (
+        payload.type ===
+        'manual_ask_cancel'
+      ) {
+        manualAskActive =
+          false
+
+        manualAskBuffer =
+          []
+
+        return
+      }
+
+      if (
+        payload.type ===
+        'notes_start'
+      ) {
+        startNotes()
+
+        return
+      }
+
+      if (
+        payload.type ===
+        'notes_stop'
+      ) {
+        stopNotes()
+
+        return
+      }
+    }
+
+    // ==================================================
+    // G2 SOCKET
+    // ==================================================
+
+    g2Socket.on(
+      'message',
+      data => {
+        if (
+          Buffer.isBuffer(
+            data,
+          )
+        ) {
+          const text =
+            data.toString(
+              'utf8',
+            )
+
+          if (
+            text.startsWith(
+              '{',
+            )
+          ) {
+            try {
+              handleControlMessage(
+                JSON.parse(
+                  text,
+                ),
+              )
+
+              return
+            } catch {
+              // treat as audio
+            }
+          }
+        }
+
+        if (
+          deepgramSocket.readyState ===
+          WebSocket.OPEN
+        ) {
+          deepgramSocket.send(
+            data,
+          )
+        }
+      },
+    )
+
+    // ==================================================
+    // CLEANUP
+    // ==================================================
+
+    g2Socket.on(
+      'close',
+      () => {
+        if (
+          noteTaking &&
+          noteTranscript.length >
+            0
+        ) {
+          noteTaking =
+            false
+
+          generateNotes()
+            .catch(
+              console.error,
+            )
+        }
+
+        if (
+          manualAskTimer
+        ) {
+          clearTimeout(
+            manualAskTimer,
+          )
+        }
+
+        if (
+          deepgramSocket.readyState ===
+            WebSocket.OPEN ||
+          deepgramSocket.readyState ===
+            WebSocket.CONNECTING
+        ) {
+          deepgramSocket.close()
+        }
+      },
+    )
+
+    deepgramSocket.on(
+      'error',
+      error => {
+        console.error(
+          'Deepgram error:',
+          error,
+        )
+      },
+    )
+  },
+)
 
 // ==================================================
 // RAILWAY
 // ==================================================
 
 const PORT =
-  process.env.PORT || 3001
+  process.env.PORT ||
+  3001
 
 server.listen(
   PORT,
   '0.0.0.0',
   () => {
     console.log(
-      `G2 JARVIS v5 running on port ${PORT}`,
+      `G2 JARVIS v6 running on port ${PORT}`,
     )
   },
 )
