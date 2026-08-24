@@ -30,6 +30,14 @@ type Card = {
   questions?: string[]
 }
 
+type SessionContext = {
+  raw?: string
+  summary?: string
+  company?: string
+  course?: string
+  topic?: string
+}
+
 // ==================================================
 // STATE
 // ==================================================
@@ -55,9 +63,28 @@ let manualAsk = false
 let notesActive = false
 let notesProcessing = false
 
+let currentContext:
+  | SessionContext
+  | null = null
+
 const cards: Card[] = []
 
 let cardIndex = -1
+
+let socket:
+  | WebSocket
+  | null = null
+
+let micStarted = false
+
+let intentionalExit = false
+let reconnectTimer:
+  | ReturnType<
+      typeof setTimeout
+    >
+  | null = null
+
+let reconnectAttempts = 0
 
 // ==================================================
 // DISPLAY
@@ -104,37 +131,14 @@ function updateHud(
 }
 
 // ==================================================
-// SOCKET
-// ==================================================
-
-const socket =
-  new WebSocket(
-    SERVER_URL,
-  )
-
-socket.binaryType =
-  'arraybuffer'
-
-function sendControl(
-  payload: object,
-) {
-  if (
-    socket.readyState ===
-    WebSocket.OPEN
-  ) {
-    socket.send(
-      JSON.stringify(
-        payload,
-      ),
-    )
-  }
-}
-
-// ==================================================
 // MODE MENU
 // ==================================================
 
 function showModeMenu() {
+  selectingMode = true
+  choosingContext = false
+  speakingContext = false
+
   updateHud(
     'SELECT MODE\n\n' +
       `> ${modes[modeIndex]}\n\n` +
@@ -148,9 +152,7 @@ function changeMode(
 ) {
   modeIndex += direction
 
-  if (
-    modeIndex < 0
-  ) {
+  if (modeIndex < 0) {
     modeIndex =
       modes.length - 1
   }
@@ -166,18 +168,20 @@ function changeMode(
 }
 
 // ==================================================
-// CONTEXT SETUP
+// CONTEXT
 // ==================================================
 
 function showContextChoice() {
+  selectingMode = false
   choosingContext = true
+  speakingContext = false
 
   updateHud(
     'ADD CONTEXT?\n\n' +
       'Tap: speak context\n' +
       '↓: skip\n\n' +
       'Example:\n' +
-      '"STAT 340 regression"',
+      '"ServiceNow AI meeting"',
   )
 }
 
@@ -191,16 +195,28 @@ function startContextCapture() {
   })
 
   updateHud(
-    'SET CONTEXT\n\n' +
+    'PREPARING CONTEXT\n\n' +
       'Speak now...\n\n' +
-      'Example:\n' +
-      '"ServiceNow AI meeting"',
+      'Tap: cancel',
   )
+}
+
+function cancelContextCapture() {
+  speakingContext = false
+  choosingContext = false
+
+  sendControl({
+    type:
+      'context_skip',
+  })
+
+  listeningScreen()
 }
 
 function skipContext() {
   choosingContext = false
   speakingContext = false
+  currentContext = null
 
   sendControl({
     type:
@@ -215,6 +231,10 @@ function skipContext() {
 // ==================================================
 
 function listeningScreen() {
+  selectingMode = false
+  choosingContext = false
+  speakingContext = false
+
   const notes =
     notesActive
       ? 'NOTES: RECORDING'
@@ -222,17 +242,27 @@ function listeningScreen() {
         ? 'NOTES: SAVING...'
         : 'NOTES: OFF'
 
+  const contextLabel =
+    currentContext?.company ||
+    currentContext?.course ||
+    currentContext?.topic ||
+    ''
+
   updateHud(
-    `${mode} MODE\n\n` +
+    `${mode} MODE\n` +
+      (
+        contextLabel
+          ? `${contextLabel}\n`
+          : ''
+      ) +
       `${notes}\n\n` +
       'Tap: ask me\n' +
-      '↓: notes on/off\n' +
-      '↑: last card',
+      '↓ notes · ↑ cards',
   )
 }
 
 // ==================================================
-// CARDS
+// CARD DISPLAY
 // ==================================================
 
 function renderCard(
@@ -309,13 +339,20 @@ function showCurrentCard() {
   )
 }
 
+// Important:
+// If a bundle sends three cards,
+// display the FIRST card and queue
+// the others behind it.
 function addCard(
   card: Card,
 ) {
+  const wasListening =
+    cardIndex === -1
+
   cards.push(card)
 
   if (
-    cards.length > 15
+    cards.length > 20
   ) {
     cards.shift()
 
@@ -327,7 +364,7 @@ function addCard(
   }
 
   if (
-    cardIndex === -1 &&
+    wasListening &&
     !manualAsk &&
     !speakingContext &&
     !choosingContext
@@ -339,11 +376,54 @@ function addCard(
   }
 }
 
+function addBriefingCards(
+  briefing: Card[],
+) {
+  if (
+    briefing.length === 0
+  ) {
+    listeningScreen()
+
+    return
+  }
+
+  const startIndex =
+    cards.length
+
+  for (
+    const card of
+    briefing
+  ) {
+    cards.push(card)
+  }
+
+  while (
+    cards.length > 20
+  ) {
+    cards.shift()
+  }
+
+  cardIndex =
+    Math.max(
+      0,
+      startIndex -
+        Math.max(
+          0,
+          startIndex +
+            briefing.length -
+            20,
+        ),
+    )
+
+  showCurrentCard()
+}
+
 function previousCard() {
   if (
     cards.length === 0
   ) {
     listeningScreen()
+
     return
   }
 
@@ -366,6 +446,7 @@ function nextCard() {
     cards.length === 0
   ) {
     listeningScreen()
+
     return
   }
 
@@ -376,6 +457,7 @@ function nextCard() {
       cards.length - 1
 
     showCurrentCard()
+
     return
   }
 
@@ -386,6 +468,7 @@ function nextCard() {
     cardIndex += 1
 
     showCurrentCard()
+
     return
   }
 
@@ -395,13 +478,31 @@ function nextCard() {
 }
 
 // ==================================================
+// CLEAR SESSION UI
+// ==================================================
+
+function clearSessionUi() {
+  cards.splice(
+    0,
+    cards.length,
+  )
+
+  cardIndex = -1
+
+  currentContext = null
+
+  manualAsk = false
+
+  notesActive = false
+  notesProcessing = false
+}
+
+// ==================================================
 // NOTES
 // ==================================================
 
 function toggleNotes() {
-  if (
-    notesProcessing
-  ) {
+  if (notesProcessing) {
     return
   }
 
@@ -419,7 +520,7 @@ function toggleNotes() {
 
     setTimeout(
       listeningScreen,
-      900,
+      800,
     )
 
     return
@@ -439,7 +540,7 @@ function toggleNotes() {
 }
 
 // ==================================================
-// MANUAL ASK
+// ASK ME
 // ==================================================
 
 function startManualAsk() {
@@ -454,7 +555,8 @@ function startManualAsk() {
   updateHud(
     'ASK ME\n\n' +
       'Speak your question...\n\n' +
-      'Tap: cancel',
+      'Commands:\n' +
+      '"new session"',
   )
 }
 
@@ -470,226 +572,463 @@ function cancelManualAsk() {
 }
 
 // ==================================================
-// SERVER EVENTS
+// SOCKET HELPERS
 // ==================================================
 
-socket.onopen =
-  async () => {
-    console.log(
-      'Connected to cloud server',
-    )
+function socketOpen() {
+  return (
+    socket !== null &&
+    socket.readyState ===
+      WebSocket.OPEN
+  )
+}
 
-    const micStarted =
-      await bridge.audioControl(
-        true,
-      )
-
-    if (!micStarted) {
-      updateHud(
-        'G2 COPILOT\n\nMicrophone failed.',
-      )
-
-      return
-    }
-
-    showModeMenu()
+function sendControl(
+  payload: object,
+) {
+  if (!socketOpen()) {
+    return
   }
 
-socket.onmessage =
-  event => {
-    try {
-      const message =
-        JSON.parse(
-          event.data,
+  socket?.send(
+    JSON.stringify(
+      payload,
+    ),
+  )
+}
+
+// ==================================================
+// RECONNECT
+// ==================================================
+
+function scheduleReconnect() {
+  if (
+    intentionalExit ||
+    reconnectTimer
+  ) {
+    return
+  }
+
+  reconnectAttempts += 1
+
+  const delay =
+    Math.min(
+      2000 *
+        reconnectAttempts,
+      10000,
+    )
+
+  updateHud(
+    'G2 COPILOT\n\n' +
+      'Connection lost.\n' +
+      'Reconnecting...',
+  )
+
+  reconnectTimer =
+    setTimeout(
+      () => {
+        reconnectTimer = null
+
+        connectSocket(
+          true,
         )
+      },
+      delay,
+    )
+}
 
-      // ------------------------------------------
-      // CARDS
-      // ------------------------------------------
+async function ensureMicrophone() {
+  if (micStarted) {
+    return true
+  }
 
-      if (
-        message.type ===
-          'card' &&
-        message.card
-      ) {
-        addCard(
-          message.card as Card,
+  const started =
+    await bridge.audioControl(
+      true,
+    )
+
+  if (started) {
+    micStarted = true
+  }
+
+  return started
+}
+
+// ==================================================
+// SOCKET CONNECTION
+// ==================================================
+
+function connectSocket(
+  reconnecting = false,
+) {
+  socket =
+    new WebSocket(
+      SERVER_URL,
+    )
+
+  socket.binaryType =
+    'arraybuffer'
+
+  socket.onopen =
+    async () => {
+      console.log(
+        'Connected to cloud server',
+      )
+
+      reconnectAttempts = 0
+
+      const micOkay =
+        await ensureMicrophone()
+
+      if (!micOkay) {
+        updateHud(
+          'G2 COPILOT\n\nMicrophone failed.',
         )
 
         return
       }
 
-      // ------------------------------------------
-      // CONTEXT
-      // ------------------------------------------
+      if (reconnecting) {
+        sendControl({
+          type:
+            'restore_session',
 
-      if (
-        message.type ===
-        'context_ready'
-      ) {
-        speakingContext = false
-        choosingContext = false
+          mode,
 
-        const summary =
-          String(
-            message.context
-              ?.summary ||
-              'Context loaded',
+          context:
+            currentContext,
+        })
+
+        updateHud(
+          'G2 COPILOT\n\nReconnected...',
+        )
+
+        return
+      }
+
+      showModeMenu()
+    }
+
+  socket.onmessage =
+    event => {
+      try {
+        const message =
+          JSON.parse(
+            event.data,
           )
 
-        updateHud(
-          'CONTEXT READY\n\n' +
-            summary,
-        )
+        // ------------------------------------------
+        // CARD
+        // ------------------------------------------
 
-        setTimeout(
-          listeningScreen,
-          1800,
-        )
+        if (
+          message.type ===
+            'card' &&
+          message.card
+        ) {
+          addCard(
+            message.card as Card,
+          )
 
-        return
-      }
+          return
+        }
 
-      if (
-        message.type ===
-        'context_skipped'
-      ) {
-        speakingContext = false
-        choosingContext = false
+        // ------------------------------------------
+        // MODE
+        // ------------------------------------------
 
-        listeningScreen()
+        if (
+          message.type ===
+          'mode_changed'
+        ) {
+          mode =
+            message.mode as Mode
 
-        return
-      }
+          const foundIndex =
+            modes.indexOf(
+              mode,
+            )
 
-      // ------------------------------------------
-      // MANUAL ANSWER
-      // ------------------------------------------
+          if (
+            foundIndex >= 0
+          ) {
+            modeIndex =
+              foundIndex
+          }
 
-      if (
-        message.type ===
-        'manual_answer'
-      ) {
-        manualAsk = false
+          return
+        }
 
-        updateHud(
-          'ANSWER\n\n' +
+        // ------------------------------------------
+        // CONTEXT READY + BRIEFING
+        // ------------------------------------------
+
+        if (
+          message.type ===
+          'context_ready'
+        ) {
+          speakingContext = false
+          choosingContext = false
+
+          currentContext =
+            message.context || null
+
+          const summary =
             String(
-              message.text,
-            ) +
-            '\n\nTap: back',
+              message.context
+                ?.summary ||
+                'Context loaded',
+            )
+
+          const briefing =
+            Array.isArray(
+              message.briefing,
+            )
+              ? (
+                  message.briefing as Card[]
+                )
+              : []
+
+          updateHud(
+            'CONTEXT READY\n\n' +
+              summary +
+              '\n\nBriefing ready...',
+          )
+
+          setTimeout(
+            () => {
+              addBriefingCards(
+                briefing,
+              )
+            },
+            1200,
+          )
+
+          return
+        }
+
+        if (
+          message.type ===
+          'context_skipped'
+        ) {
+          speakingContext = false
+          choosingContext = false
+
+          listeningScreen()
+
+          return
+        }
+
+        if (
+          message.type ===
+          'context_error'
+        ) {
+          speakingContext = false
+
+          updateHud(
+            'CONTEXT ERROR\n\n' +
+              String(
+                message.text ||
+                  'Could not load.',
+              ),
+          )
+
+          setTimeout(
+            listeningScreen,
+            1200,
+          )
+
+          return
+        }
+
+        // ------------------------------------------
+        // SESSION RESET
+        // ------------------------------------------
+
+        if (
+          message.type ===
+          'session_reset'
+        ) {
+          clearSessionUi()
+
+          if (message.mode) {
+            mode =
+              message.mode as Mode
+
+            const index =
+              modes.indexOf(
+                mode,
+              )
+
+            if (index >= 0) {
+              modeIndex = index
+            }
+          }
+
+          updateHud(
+            'NEW SESSION\n\n' +
+              `${mode} MODE\n\n` +
+              'Choose new context...',
+          )
+
+          setTimeout(
+            showContextChoice,
+            900,
+          )
+
+          return
+        }
+
+        // ------------------------------------------
+        // RECONNECT RESTORE
+        // ------------------------------------------
+
+        if (
+          message.type ===
+          'session_restored'
+        ) {
+          if (message.mode) {
+            mode =
+              message.mode as Mode
+          }
+
+          if (
+            message.context &&
+            (
+              message.context
+                .summary ||
+              message.context
+                .company ||
+              message.context
+                .course ||
+              message.context
+                .topic
+            )
+          ) {
+            currentContext =
+              message.context
+          }
+
+          listeningScreen()
+
+          return
+        }
+
+        // ------------------------------------------
+        // MANUAL ANSWER
+        // ------------------------------------------
+
+        if (
+          message.type ===
+          'manual_answer'
+        ) {
+          manualAsk = false
+
+          updateHud(
+            'ANSWER\n\n' +
+              String(
+                message.text,
+              ) +
+              '\n\nTap: back',
+          )
+
+          return
+        }
+
+        // ------------------------------------------
+        // NOTES
+        // ------------------------------------------
+
+        if (
+          message.type ===
+          'notes_started'
+        ) {
+          notesActive = true
+          notesProcessing = false
+
+          listeningScreen()
+
+          return
+        }
+
+        if (
+          message.type ===
+          'notes_processing'
+        ) {
+          notesActive = false
+          notesProcessing = true
+
+          updateHud(
+            'NOTES\n\nGenerating notes...',
+          )
+
+          return
+        }
+
+        if (
+          message.type ===
+          'notes_saved'
+        ) {
+          notesActive = false
+          notesProcessing = false
+
+          updateHud(
+            'NOTES SAVED\n\n' +
+              String(
+                message.title ||
+                  'Session Notes',
+              ) +
+              '\n\nTap: back',
+          )
+
+          return
+        }
+
+        if (
+          message.type ===
+          'notes_error'
+        ) {
+          notesActive = false
+          notesProcessing = false
+
+          updateHud(
+            'NOTES ERROR\n\n' +
+              String(
+                message.text ||
+                  'Could not save.',
+              ) +
+              '\n\nTap: back',
+          )
+
+          return
+        }
+      } catch (error) {
+        console.error(
+          'Message error:',
+          error,
         )
-
-        return
       }
+    }
 
-      // ------------------------------------------
-      // NOTES
-      // ------------------------------------------
-
-      if (
-        message.type ===
-        'notes_started'
-      ) {
-        notesActive = true
-        notesProcessing = false
-
-        listeningScreen()
-
-        return
-      }
-
-      if (
-        message.type ===
-        'notes_processing'
-      ) {
-        notesActive = false
-        notesProcessing = true
-
-        updateHud(
-          'NOTES\n\nGenerating notes...',
-        )
-
-        return
-      }
-
-      if (
-        message.type ===
-        'notes_saved'
-      ) {
-        notesActive = false
-        notesProcessing = false
-
-        updateHud(
-          'NOTES SAVED\n\n' +
-            String(
-              message.title ||
-                'Session Notes',
-            ) +
-            '\n\nTap: back',
-        )
-
-        return
-      }
-
-      if (
-        message.type ===
-        'notes_error'
-      ) {
-        notesActive = false
-        notesProcessing = false
-
-        updateHud(
-          'NOTES ERROR\n\n' +
-            String(
-              message.text ||
-                'Could not save.',
-            ) +
-            '\n\nTap: back',
-        )
-
-        return
-      }
-
-      // ------------------------------------------
-      // MODE
-      // ------------------------------------------
-
-      if (
-        message.type ===
-        'mode_changed'
-      ) {
-        mode =
-          message.mode as Mode
-
-        return
-      }
-    } catch (error) {
+  socket.onerror =
+    error => {
       console.error(
-        'Message error:',
+        'WebSocket error:',
         error,
       )
     }
-  }
 
-socket.onerror =
-  error => {
-    console.error(
-      'WebSocket error:',
-      error,
-    )
+  socket.onclose =
+    () => {
+      socket = null
 
-    updateHud(
-      'G2 COPILOT\n\nCloud connection failed.',
-    )
-  }
+      if (!intentionalExit) {
+        scheduleReconnect()
+      }
+    }
+}
 
-socket.onclose =
-  () => {
-    updateHud(
-      'G2 COPILOT\n\nCloud server disconnected.',
-    )
-  }
+connectSocket()
 
 // ==================================================
 // EVENT HELPER
@@ -718,15 +1057,30 @@ function eventTypeOf(
 // ==================================================
 
 function exitCopilot() {
+  intentionalExit = true
+
+  if (reconnectTimer) {
+    clearTimeout(
+      reconnectTimer,
+    )
+
+    reconnectTimer = null
+  }
+
   bridge.audioControl(
     false,
   )
 
+  micStarted = false
+
   if (
-    socket.readyState ===
-      WebSocket.OPEN ||
-    socket.readyState ===
-      WebSocket.CONNECTING
+    socket &&
+    (
+      socket.readyState ===
+        WebSocket.OPEN ||
+      socket.readyState ===
+        WebSocket.CONNECTING
+    )
   ) {
     socket.close()
   }
@@ -750,10 +1104,9 @@ const unsubscribe =
       if (
         event.audioEvent
           ?.audioPcm &&
-        socket.readyState ===
-          WebSocket.OPEN
+        socketOpen()
       ) {
-        socket.send(
+        socket?.send(
           new Uint8Array(
             event.audioEvent
               .audioPcm,
@@ -796,9 +1149,7 @@ const unsubscribe =
         textType ===
           OsEventTypeList.SCROLL_TOP_EVENT
       ) {
-        if (
-          selectingMode
-        ) {
+        if (selectingMode) {
           changeMode(-1)
 
           return
@@ -827,17 +1178,13 @@ const unsubscribe =
         textType ===
           OsEventTypeList.SCROLL_BOTTOM_EVENT
       ) {
-        if (
-          selectingMode
-        ) {
+        if (selectingMode) {
           changeMode(1)
 
           return
         }
 
-        if (
-          choosingContext
-        ) {
+        if (choosingContext) {
           skipContext()
 
           return
@@ -874,13 +1221,9 @@ const unsubscribe =
           OsEventTypeList.CLICK_EVENT
       ) {
         // SELECT MODE
-        if (
-          selectingMode
-        ) {
+        if (selectingMode) {
           mode =
-            modes[
-              modeIndex
-            ]
+            modes[modeIndex]
 
           selectingMode = false
 
@@ -896,32 +1239,28 @@ const unsubscribe =
           return
         }
 
-        // CONTEXT CHOICE
-        if (
-          choosingContext
-        ) {
+        // CHOOSE CONTEXT
+        if (choosingContext) {
           startContextCapture()
 
           return
         }
 
-        // CONTEXT IS LISTENING
-        if (
-          speakingContext
-        ) {
+        // CANCEL CONTEXT CAPTURE
+        if (speakingContext) {
+          cancelContextCapture()
+
           return
         }
 
-        // MANUAL ASK CANCEL
-        if (
-          manualAsk
-        ) {
+        // CANCEL ASK ME
+        if (manualAsk) {
           cancelManualAsk()
 
           return
         }
 
-        // DISMISS CURRENT CARD
+        // DISMISS CARD
         if (
           cardIndex >= 0
         ) {
@@ -932,10 +1271,8 @@ const unsubscribe =
           return
         }
 
-        // RETURN AFTER NOTES
-        if (
-          notesProcessing
-        ) {
+        // DISMISS NOTES STATUS
+        if (notesProcessing) {
           listeningScreen()
 
           return
@@ -957,16 +1294,15 @@ const unsubscribe =
         sysType ===
           OsEventTypeList.ABNORMAL_EXIT_EVENT
       ) {
+        intentionalExit = true
+
         bridge.audioControl(
           false,
         )
 
-        if (
-          socket.readyState ===
-            WebSocket.OPEN ||
-          socket.readyState ===
-            WebSocket.CONNECTING
-        ) {
+        micStarted = false
+
+        if (socket) {
           socket.close()
         }
 

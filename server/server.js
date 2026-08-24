@@ -107,15 +107,19 @@ function loadMemory() {
       entities:
         parsed.entities || {},
     }
-  } catch {
+  } catch (error) {
+    console.error(
+      'Memory load error:',
+      error,
+    )
+
     return {
       entities: {},
     }
   }
 }
 
-let persistentMemory =
-  loadMemory()
+let persistentMemory = loadMemory()
 
 function saveMemory() {
   try {
@@ -162,8 +166,7 @@ function extractText(response) {
 }
 
 function parseClaudeJson(raw) {
-  const cleaned =
-    cleanJson(raw)
+  const cleaned = cleanJson(raw)
 
   try {
     return JSON.parse(cleaned)
@@ -195,17 +198,23 @@ function parseClaudeJson(raw) {
   }
 }
 
+function normalizedText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 function escapeDriveQuery(value) {
   return String(value)
     .replace(/\\/g, '\\\\')
     .replace(/'/g, "\\'")
 }
 
-function normalizedText(value) {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/\s+/g, ' ')
-    .trim()
+function sleep(ms) {
+  return new Promise(resolve =>
+    setTimeout(resolve, ms),
+  )
 }
 
 // ==================================================
@@ -214,15 +223,18 @@ function normalizedText(value) {
 
 app.get('/', (req, res) => {
   res.send(
-    'G2 Copilot JARVIS v9 running',
+    'G2 Copilot JARVIS v10 running',
   )
 })
 
 app.get('/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '9.0',
-    contextSetup: true,
+    version: '10.0',
+    contextBriefing: true,
+    sessionReset: true,
+    modeSwitching: true,
+    reconnect: true,
     entityEnrichment: true,
     claimVerification: true,
     numericalIntelligence: true,
@@ -246,6 +258,7 @@ app.get('/google/auth', (req, res) => {
     client.generateAuthUrl({
       access_type: 'offline',
       prompt: 'consent',
+
       scope: [
         'https://www.googleapis.com/auth/drive.file',
         'https://www.googleapis.com/auth/drive.metadata.readonly',
@@ -263,6 +276,14 @@ app.get(
         String(
           req.query.code || '',
         )
+
+      if (!code) {
+        return res
+          .status(400)
+          .send(
+            'Missing authorization code.',
+          )
+      }
 
       const client =
         createGoogleOAuthClient()
@@ -452,8 +473,7 @@ async function createGoogleDoc(
         mimeType:
           'text/html',
 
-        body:
-          html,
+        body: html,
       },
 
       fields:
@@ -529,7 +549,7 @@ No markdown.
 }
 
 // ==================================================
-// G2 SESSION
+// EACH G2 CONNECTION
 // ==================================================
 
 wss.on('connection', g2Socket => {
@@ -538,23 +558,28 @@ wss.on('connection', g2Socket => {
   )
 
   console.log(
-    'NEW G2 JARVIS v9 SESSION',
+    'NEW G2 JARVIS v10 SESSION',
   )
 
   console.log(
     '==============================\n',
   )
 
+  // ==================================================
+  // STATE
+  // ==================================================
+
+  let mode = 'SALES'
+
   let conversation = []
   let recentCards = []
   let recentClaims = []
   let recentEntities = []
 
-  let mode = 'SALES'
-
-  let analyzing = false
   let transcriptRevision = 0
   let analyzedRevision = 0
+
+  let analyzing = false
   let lastBundleAt = 0
 
   let manualAskActive = false
@@ -564,9 +589,9 @@ wss.on('connection', g2Socket => {
   let noteTaking = false
   let noteTranscript = []
 
-  // ==================================================
-  // SESSION CONTEXT
-  // ==================================================
+  let contextCaptureActive = false
+  let contextCaptureBuffer = []
+  let contextCaptureTimer = null
 
   let sessionContext = {
     raw: '',
@@ -579,13 +604,101 @@ wss.on('connection', g2Socket => {
 
   let sessionContextIntel = ''
 
-  let contextCaptureActive = false
-  let contextCaptureBuffer = []
-  let contextCaptureTimer = null
-
   const MIN_RELEVANCE = 7
-  const BUNDLE_COOLDOWN_MS = 10000
-  const MAX_CONVERSATION_ITEMS = 60
+
+  const BUNDLE_COOLDOWN_MS =
+    8000
+
+  const MAX_CONVERSATION_ITEMS =
+    70
+
+  // ==================================================
+  // SAFE G2 SEND
+  // ==================================================
+
+  function sendToG2(payload) {
+    if (
+      g2Socket.readyState !==
+      WebSocket.OPEN
+    ) {
+      return false
+    }
+
+    g2Socket.send(
+      JSON.stringify(payload),
+    )
+
+    return true
+  }
+
+  // ==================================================
+  // RESET LIVE SESSION
+  // ==================================================
+
+  function clearLiveSessionState() {
+    conversation = []
+    recentCards = []
+    recentClaims = []
+    recentEntities = []
+
+    transcriptRevision = 0
+    analyzedRevision = 0
+
+    analyzing = false
+    lastBundleAt = 0
+
+    manualAskActive = false
+    manualAskBuffer = []
+
+    if (manualAskTimer) {
+      clearTimeout(
+        manualAskTimer,
+      )
+
+      manualAskTimer = null
+    }
+
+    contextCaptureActive = false
+    contextCaptureBuffer = []
+
+    if (contextCaptureTimer) {
+      clearTimeout(
+        contextCaptureTimer,
+      )
+
+      contextCaptureTimer = null
+    }
+
+    sessionContext = {
+      raw: '',
+      summary: '',
+      company: '',
+      course: '',
+      topic: '',
+      modeHint: '',
+    }
+
+    sessionContextIntel = ''
+
+    console.log(
+      'LIVE SESSION STATE RESET',
+    )
+  }
+
+  async function resetSession() {
+    if (noteTaking) {
+      await stopNotes()
+    }
+
+    clearLiveSessionState()
+
+    sendToG2({
+      type:
+        'session_reset',
+
+      mode,
+    })
+  }
 
   // ==================================================
   // DEEPGRAM
@@ -642,7 +755,8 @@ Prioritize:
 - acronyms
 - corrections
 - context
-- calculations
+- numerical implications
+- current information
 - useful connections
 `
     }
@@ -659,10 +773,11 @@ Prioritize:
 - owners
 - deadlines
 - risks
-- unresolved issues
+- blockers
 - contradictions
+- unresolved questions
 - action items
-- people/roles
+- people and roles
 - next steps
 `
     }
@@ -683,18 +798,19 @@ Prioritize:
 - professor emphasis
 - likely testable material
 - misconceptions
-- useful connections
+- useful conceptual connections
 `
     }
 
     return `
 SALES MODE
 
-Act like an elite technology AE copilot.
+Act like an elite technology account executive copilot.
 
 Prioritize:
+- customer context
 - companies
-- people
+- executives
 - products
 - competitors
 - buying signals
@@ -712,12 +828,215 @@ Prioritize:
 - hardware
 - data
 - objections
+- opportunities
 - next-best action
 `
   }
 
   // ==================================================
-  // SESSION CONTEXT PROCESSING
+  // PRELOAD CONTEXT INTELLIGENCE
+  // ==================================================
+
+  async function preloadSessionIntel() {
+    sessionContextIntel = ''
+
+    if (!sessionContext.company) {
+      return
+    }
+
+    try {
+      console.log(
+        'PRELOADING COMPANY:',
+        sessionContext.company,
+      )
+
+      const query =
+        `${sessionContext.company} latest news strategy AI cloud cybersecurity technology priorities partnerships acquisitions 2026`
+
+      const result =
+        await tvly.search(
+          query,
+          {
+            searchDepth:
+              'basic',
+
+            maxResults: 5,
+
+            includeAnswer:
+              true,
+          },
+        )
+
+      sessionContextIntel = `
+PRELOADED COMPANY:
+${sessionContext.company}
+
+SESSION TOPIC:
+${sessionContext.topic || 'Unknown'}
+
+CURRENT RESEARCH:
+${result.answer || 'None'}
+
+SOURCES:
+${(result.results || [])
+  .slice(0, 5)
+  .map(
+    item =>
+      `${item.title || ''}: ${item.content || ''}`,
+  )
+  .join('\n')}
+`
+
+      console.log(
+        'CONTEXT INTELLIGENCE READY',
+      )
+    } catch (error) {
+      console.error(
+        'Context preload error:',
+        error,
+      )
+    }
+  }
+
+  // ==================================================
+  // CONTEXT BRIEFING
+  // ==================================================
+
+  async function generateContextBriefing() {
+    if (
+      !sessionContext.summary &&
+      !sessionContext.company &&
+      !sessionContext.course &&
+      !sessionContext.topic
+    ) {
+      return []
+    }
+
+    try {
+      const response =
+        await anthropic.messages.create({
+          model: 'claude-sonnet-5',
+
+          max_tokens: 800,
+
+          system: `
+You create a PRE-CONVERSATION briefing for smart glasses.
+
+${modePrompt()}
+
+The wearer supplied setup context before the live conversation began.
+
+Give 1 to 3 useful cards that help BEFORE the conversation starts.
+
+Possible cards:
+
+KNOW_THIS
+QUESTIONS
+SAY_THIS
+
+SALES:
+Prefer:
+1. useful account/topic context
+2. 2-3 strong opening/discovery questions
+3. a useful opening line only if valuable
+
+MEETING:
+Prefer:
+1. what likely matters
+2. unresolved questions to listen for
+3. useful framing statement
+
+SCHOOL:
+Prefer:
+1. concise concept primer
+2. important connection/formula if relevant
+3. useful questions to listen for
+
+GENERAL:
+Prefer:
+1. useful context
+2. helpful background
+3. questions only when useful
+
+HUD LIMITS:
+
+KNOW_THIS:
+maximum 25 words
+
+SAY_THIS:
+maximum 22 words
+
+QUESTIONS:
+2 or 3 questions
+maximum 13 words each
+
+Return ONLY valid JSON:
+
+{
+  "cards": [
+    {
+      "type": "KNOW_THIS",
+      "relevance": 9,
+      "body": "..."
+    }
+  ]
+}
+
+Maximum 3 cards.
+Do not fabricate current facts.
+No markdown.
+`,
+
+          messages: [
+            {
+              role: 'user',
+
+              content: `
+MODE:
+${mode}
+
+SESSION CONTEXT:
+${sessionContext.summary || 'None'}
+
+COMPANY:
+${sessionContext.company || 'None'}
+
+COURSE:
+${sessionContext.course || 'None'}
+
+TOPIC:
+${sessionContext.topic || 'None'}
+
+PRELOADED INTELLIGENCE:
+
+${sessionContextIntel || 'None'}
+`,
+            },
+          ],
+        })
+
+      const parsed =
+        parseClaudeJson(
+          extractText(response),
+        )
+
+      return Array.isArray(
+        parsed?.cards,
+      )
+        ? parsed.cards
+        : []
+    } catch (error) {
+      console.error(
+        'Briefing generation error:',
+        error,
+      )
+
+      return []
+    }
+  }
+
+  // ==================================================
+  // PROCESS SESSION CONTEXT
   // ==================================================
 
   async function processSessionContext(
@@ -731,10 +1050,11 @@ Prioritize:
     const response =
       await anthropic.messages.create({
         model: 'claude-sonnet-5',
-        max_tokens: 400,
+
+        max_tokens: 450,
 
         system: `
-You extract setup context for a proactive smart-glasses assistant.
+Extract setup context for a proactive smart-glasses assistant.
 
 CURRENT SELECTED MODE:
 ${mode}
@@ -750,8 +1070,6 @@ Examples:
 
 "Meeting with ServiceNow about AI security."
 
-Return:
-
 {
   "summary": "ServiceNow meeting about AI security",
   "company": "ServiceNow",
@@ -761,8 +1079,6 @@ Return:
 }
 
 "STAT 340 lecture about regression."
-
-Return:
 
 {
   "summary": "STAT 340 lecture about regression",
@@ -779,7 +1095,7 @@ MEETING
 SCHOOL
 GENERAL
 
-Do not invent missing information.
+Do not invent information.
 
 Return ONLY valid JSON.
 No markdown.
@@ -819,20 +1135,17 @@ No markdown.
 
         company:
           String(
-            parsed.company ||
-              '',
+            parsed.company || '',
           ).trim(),
 
         course:
           String(
-            parsed.course ||
-              '',
+            parsed.course || '',
           ).trim(),
 
         topic:
           String(
-            parsed.topic ||
-              '',
+            parsed.topic || '',
           ).trim(),
 
         modeHint:
@@ -850,106 +1163,43 @@ No markdown.
       ),
     )
 
-    // ----------------------------------------------
-    // PRELOAD CURRENT COMPANY INFO
-    // ----------------------------------------------
+    await preloadSessionIntel()
 
-    sessionContextIntel = ''
+    const briefing =
+      await generateContextBriefing()
 
-    if (
-      sessionContext.company
-    ) {
-      try {
-        console.log(
-          'PRELOADING ACCOUNT:',
+    sendToG2({
+      type:
+        'context_ready',
+
+      context: {
+        summary:
+          sessionContext.summary,
+
+        company:
           sessionContext.company,
-        )
 
-        const query =
-          `${sessionContext.company} latest news strategy AI cloud cybersecurity technology priorities 2026`
+        course:
+          sessionContext.course,
 
-        const result =
-          await tvly.search(
-            query,
-            {
-              searchDepth:
-                'basic',
+        topic:
+          sessionContext.topic,
+      },
 
-              maxResults: 5,
-
-              includeAnswer:
-                true,
-            },
-          )
-
-        sessionContextIntel = `
-PRELOADED COMPANY:
-${sessionContext.company}
-
-SESSION TOPIC:
-${sessionContext.topic || 'Unknown'}
-
-CURRENT RESEARCH:
-${result.answer || 'None'}
-
-SOURCES:
-${(result.results || [])
-  .slice(0, 5)
-  .map(
-    item =>
-      `${item.title || ''}: ${item.content || ''}`,
-  )
-  .join('\n')}
-`
-
-        console.log(
-          'SESSION CONTEXT INTELLIGENCE READY',
-        )
-      } catch (error) {
-        console.error(
-          'Context preload error:',
-          error,
-        )
-      }
-    }
-
-    if (
-      g2Socket.readyState ===
-      WebSocket.OPEN
-    ) {
-      g2Socket.send(
-        JSON.stringify({
-          type:
-            'context_ready',
-
-          context: {
-            summary:
-              sessionContext.summary,
-
-            company:
-              sessionContext.company,
-
-            course:
-              sessionContext.course,
-
-            topic:
-              sessionContext.topic,
-          },
-        }),
-      )
-    }
+      briefing,
+    })
   }
 
+  // ==================================================
+  // CONTEXT CAPTURE
+  // ==================================================
+
   function finishContextCapture() {
-    if (
-      !contextCaptureActive
-    ) {
+    if (!contextCaptureActive) {
       return
     }
 
-    if (
-      contextCaptureTimer
-    ) {
+    if (contextCaptureTimer) {
       clearTimeout(
         contextCaptureTimer,
       )
@@ -966,17 +1216,10 @@ ${(result.results || [])
     contextCaptureBuffer = []
 
     if (!raw) {
-      if (
-        g2Socket.readyState ===
-        WebSocket.OPEN
-      ) {
-        g2Socket.send(
-          JSON.stringify({
-            type:
-              'context_skipped',
-          }),
-        )
-      }
+      sendToG2({
+        type:
+          'context_skipped',
+      })
 
       return
     }
@@ -988,13 +1231,19 @@ ${(result.results || [])
         'Session context error:',
         error,
       )
+
+      sendToG2({
+        type:
+          'context_error',
+
+        text:
+          'Could not prepare context.',
+      })
     })
   }
 
   function scheduleContextFinish() {
-    if (
-      contextCaptureTimer
-    ) {
+    if (contextCaptureTimer) {
       clearTimeout(
         contextCaptureTimer,
       )
@@ -1017,12 +1266,13 @@ ${(result.results || [])
     const response =
       await anthropic.messages.create({
         model: 'claude-sonnet-5',
-        max_tokens: 850,
+
+        max_tokens: 900,
 
         system: `
 You are the trigger engine for proactive smart glasses.
 
-Do NOT produce final HUD text.
+Do NOT create final HUD text.
 
 ${modePrompt()}
 
@@ -1127,7 +1377,8 @@ ${context}
     trigger,
   ) {
     if (
-      trigger?.has_entities !== true
+      trigger?.has_entities !==
+      true
     ) {
       return {
         useful: false,
@@ -1186,13 +1437,15 @@ ${context}
       }
     }
 
-    const routeResponse =
-      await anthropic.messages.create({
-        model: 'claude-sonnet-5',
-        max_tokens: 500,
+    try {
+      const routingResponse =
+        await anthropic.messages.create({
+          model: 'claude-sonnet-5',
 
-        system: `
-Decide which entities are worth enriching.
+          max_tokens: 550,
+
+          system: `
+Decide which entities in the current conversation deserve enrichment.
 
 ${modePrompt()}
 
@@ -1219,11 +1472,11 @@ If nothing is useful:
 No markdown.
 `,
 
-        messages: [
-          {
-            role: 'user',
+          messages: [
+            {
+              role: 'user',
 
-            content: `
+              content: `
 SESSION CONTEXT:
 
 ${sessionContext.summary || 'None'}
@@ -1238,63 +1491,66 @@ ${JSON.stringify(
   newEntities,
 )}
 `,
-          },
-        ],
-      })
+            },
+          ],
+        })
 
-    const route =
-      parseClaudeJson(
-        extractText(
-          routeResponse,
-        ),
-      )
+      const routed =
+        parseClaudeJson(
+          extractText(
+            routingResponse,
+          ),
+        )
 
-    const routed =
-      Array.isArray(
-        route?.entities,
-      )
-        ? route.entities
-            .filter(
-              entity =>
-                Number(
-                  entity.relevance ||
-                    0,
-                ) >= 7,
-            )
-            .slice(0, 3)
-        : []
+      const selected =
+        Array.isArray(
+          routed?.entities,
+        )
+          ? routed.entities
+              .filter(
+                entity =>
+                  Number(
+                    entity.relevance ||
+                      0,
+                  ) >= 7,
+              )
+              .slice(0, 3)
+          : []
 
-    const enriched = []
+      const enriched = []
 
-    for (const entity of routed) {
-      const key =
-        `${entity.type}:${normalizedText(
-          entity.name,
-        )}`
-
-      let researchText =
-        'No live research performed.'
-
-      if (
-        entity.research === true &&
-        entity.query
+      for (
+        const entity of
+        selected
       ) {
-        try {
-          const result =
-            await tvly.search(
-              entity.query,
-              {
-                searchDepth:
-                  'basic',
+        const key =
+          `${entity.type}:${normalizedText(
+            entity.name,
+          )}`
 
-                maxResults: 5,
+        let researchText =
+          'No live research.'
 
-                includeAnswer:
-                  true,
-              },
-            )
+        if (
+          entity.research === true &&
+          entity.query
+        ) {
+          try {
+            const result =
+              await tvly.search(
+                entity.query,
+                {
+                  searchDepth:
+                    'basic',
 
-          researchText = `
+                  maxResults: 5,
+
+                  includeAnswer:
+                    true,
+                },
+              )
+
+            researchText = `
 SUMMARY:
 ${result.answer || 'None'}
 
@@ -1307,20 +1563,22 @@ ${(result.results || [])
   )
   .join('\n')}
 `
-        } catch (error) {
-          console.error(
-            'Entity research error:',
-            error,
-          )
+          } catch (error) {
+            console.error(
+              'Entity research error:',
+              error,
+            )
+          }
         }
-      }
 
-      const response =
-        await anthropic.messages.create({
-          model: 'claude-sonnet-5',
-          max_tokens: 500,
+        const response =
+          await anthropic.messages.create({
+            model:
+              'claude-sonnet-5',
 
-          system: `
+            max_tokens: 500,
+
+            system: `
 Produce concise entity enrichment for smart glasses.
 
 ${modePrompt()}
@@ -1336,10 +1594,162 @@ Return ONLY valid JSON:
 }
 
 Max 35 words.
-
 No trivia.
-Only useful context.
-Do not fabricate.
+No fabricated information.
+No markdown.
+`,
+
+            messages: [
+              {
+                role: 'user',
+
+                content: `
+SESSION CONTEXT:
+
+${sessionContext.summary || 'None'}
+
+CONVERSATION:
+
+${context}
+
+ENTITY:
+
+${JSON.stringify(entity)}
+
+RESEARCH:
+
+${researchText}
+`,
+              },
+            ],
+          })
+
+        const parsed =
+          parseClaudeJson(
+            extractText(response),
+          )
+
+        if (
+          parsed?.useful === true &&
+          Number(
+            parsed.relevance || 0,
+          ) >= 7 &&
+          parsed.summary
+        ) {
+          enriched.push(parsed)
+
+          persistentMemory.entities[
+            key
+          ] = {
+            ...parsed,
+
+            enrichedAt:
+              new Date()
+                .toISOString(),
+          }
+
+          recentEntities.push(
+            key,
+          )
+        }
+      }
+
+      if (
+        recentEntities.length > 40
+      ) {
+        recentEntities =
+          recentEntities.slice(-40)
+      }
+
+      saveMemory()
+
+      return {
+        useful:
+          enriched.length > 0,
+
+        entities: enriched,
+      }
+    } catch (error) {
+      console.error(
+        'Entity enrichment error:',
+        error,
+      )
+
+      return {
+        useful: false,
+        entities: [],
+      }
+    }
+  }
+
+  // ==================================================
+  // NUMERICAL INTELLIGENCE
+  // ==================================================
+
+  async function analyzeNumbers(
+    context,
+    trigger,
+  ) {
+    if (
+      trigger?.has_numbers !==
+      true
+    ) {
+      return {
+        useful: false,
+        relevance: 0,
+        calculations: [],
+        summary: '',
+      }
+    }
+
+    try {
+      const response =
+        await anthropic.messages.create({
+          model:
+            'claude-sonnet-5',
+
+          max_tokens: 700,
+
+          system: `
+You are the numerical intelligence engine for smart glasses.
+
+Calculate only useful numerical implications supported by the conversation.
+
+Examples:
+
+8000 users × $42/month
+= $336K/month
+= $4.032M/year
+
+18% off $2.4M
+= $432K savings
+= $1.968M final price
+
+Do not invent missing values.
+
+Return ONLY valid JSON:
+
+{
+  "useful": true,
+  "relevance": 9,
+  "calculations": [
+    {
+      "label": "Annual spend",
+      "expression": "8000 × 42 × 12",
+      "result": "$4.032M/year"
+    }
+  ],
+  "summary": "8,000 users at $42/month equals about $4.03M annually."
+}
+
+If nothing useful:
+
+{
+  "useful": false,
+  "relevance": 0,
+  "calculations": [],
+  "summary": ""
+}
 
 No markdown.
 `,
@@ -1357,81 +1767,32 @@ CONVERSATION:
 
 ${context}
 
-ENTITY:
+SIGNALS:
 
 ${JSON.stringify(
-  entity,
+  trigger?.signals || [],
 )}
-
-RESEARCH:
-
-${researchText}
 `,
             },
           ],
         })
 
-      const parsed =
+      return (
         parseClaudeJson(
-          extractText(
-            response,
-          ),
-        )
-
-      if (
-        parsed?.useful === true &&
-        Number(
-          parsed.relevance || 0,
-        ) >= 7 &&
-        parsed.summary
-      ) {
-        enriched.push(parsed)
-
-        persistentMemory.entities[
-          key
-        ] = {
-          ...parsed,
-
-          enrichedAt:
-            new Date()
-              .toISOString(),
+          extractText(response),
+        ) || {
+          useful: false,
+          relevance: 0,
+          calculations: [],
+          summary: '',
         }
+      )
+    } catch (error) {
+      console.error(
+        'Number analysis error:',
+        error,
+      )
 
-        recentEntities.push(
-          key,
-        )
-      }
-    }
-
-    if (
-      recentEntities.length > 40
-    ) {
-      recentEntities =
-        recentEntities.slice(-40)
-    }
-
-    saveMemory()
-
-    return {
-      useful:
-        enriched.length > 0,
-
-      entities:
-        enriched,
-    }
-  }
-
-  // ==================================================
-  // NUMERICAL INTELLIGENCE
-  // ==================================================
-
-  async function analyzeNumbers(
-    context,
-    trigger,
-  ) {
-    if (
-      trigger?.has_numbers !== true
-    ) {
       return {
         useful: false,
         relevance: 0,
@@ -1439,91 +1800,6 @@ ${researchText}
         summary: '',
       }
     }
-
-    const response =
-      await anthropic.messages.create({
-        model: 'claude-sonnet-5',
-        max_tokens: 700,
-
-        system: `
-You are the numerical intelligence engine for smart glasses.
-
-Calculate useful numerical implications.
-
-Examples:
-
-8000 users × $42/month
-= $336K/month
-= $4.032M/year
-
-18% off $2.4M
-= $432K savings
-= $1.968M final price
-
-Do not guess missing values.
-
-Return ONLY valid JSON:
-
-{
-  "useful": true,
-  "relevance": 9,
-  "calculations": [
-    {
-      "label": "Annual spend",
-      "expression": "8000 × 42 × 12",
-      "result": "$4.032M/year"
-    }
-  ],
-  "summary": "8,000 users at $42/month equals about $4.03M annually."
-}
-
-No useful calculation:
-
-{
-  "useful": false,
-  "relevance": 0,
-  "calculations": [],
-  "summary": ""
-}
-
-No markdown.
-`,
-
-        messages: [
-          {
-            role: 'user',
-
-            content: `
-SESSION CONTEXT:
-
-${sessionContext.summary || 'None'}
-
-CONVERSATION:
-
-${context}
-
-SIGNALS:
-
-${JSON.stringify(
-  trigger?.signals || [],
-)}
-`,
-          },
-        ],
-      })
-
-    return (
-      parseClaudeJson(
-        extractText(
-          response,
-        ),
-      ) || {
-        useful: false,
-        relevance: 0,
-        calculations: [],
-        summary: '',
-      }
-    )
   }
 
   // ==================================================
@@ -1535,7 +1811,8 @@ ${JSON.stringify(
     trigger,
   ) {
     if (
-      trigger?.has_claims !== true
+      trigger?.has_claims !==
+      true
     ) {
       return {
         checked: false,
@@ -1598,10 +1875,11 @@ ${JSON.stringify(
       const response =
         await anthropic.messages.create({
           model: 'claude-sonnet-5',
-          max_tokens: 900,
+
+          max_tokens: 950,
 
           system: `
-Verify factual claims using supplied research.
+Verify factual claims using the supplied research.
 
 Classify:
 
@@ -1611,6 +1889,8 @@ MISLEADING
 UNCERTAIN
 
 Be conservative.
+
+Do not call something false simply because evidence is missing.
 
 Return ONLY valid JSON:
 
@@ -1657,9 +1937,7 @@ ${JSON.stringify(
 
       const parsed =
         parseClaudeJson(
-          extractText(
-            response,
-          ),
+          extractText(response),
         )
 
       for (
@@ -1667,9 +1945,7 @@ ${JSON.stringify(
         unseenClaims
       ) {
         recentClaims.push(
-          normalizedText(
-            claim,
-          ),
+          normalizedText(claim),
         )
       }
 
@@ -1739,7 +2015,12 @@ ${JSON.stringify(
   result.results || [],
 )}
 `
-    } catch {
+    } catch (error) {
+      console.error(
+        'Live research error:',
+        error,
+      )
+
       return (
         'Live research failed.'
       )
@@ -1747,7 +2028,7 @@ ${JSON.stringify(
   }
 
   // ==================================================
-  // CARD BUNDLE GENERATOR
+  // BUNDLE GENERATOR
   // ==================================================
 
   async function generateBundle(
@@ -1784,12 +2065,22 @@ ${JSON.stringify(
     const response =
       await anthropic.messages.create({
         model: 'claude-sonnet-5',
+
         max_tokens: 1200,
 
         system: `
 Create compact HUD card bundles.
 
 ${modePrompt()}
+
+Use:
+- session setup
+- preloaded intelligence
+- live conversation
+- entity enrichment
+- numerical intelligence
+- claim verification
+- live research
 
 Return 1 to 3 cards.
 
@@ -1798,14 +2089,6 @@ Allowed:
 KNOW_THIS
 QUESTIONS
 SAY_THIS
-
-Use:
-- session setup
-- preloaded intelligence
-- entity enrichment
-- numerical intelligence
-- claim verification
-- live conversation
 
 SALES:
 Prefer KNOW_THIS → QUESTIONS → SAY_THIS
@@ -1817,17 +2100,21 @@ SCHOOL:
 Prefer KNOW_THIS explanation → KNOW_THIS connection → QUESTIONS
 
 GENERAL:
-Prefer KNOW_THIS fact/context → KNOW_THIS connection → QUESTIONS/SAY_THIS
+Prefer KNOW_THIS fact/context → KNOW_THIS connection → QUESTIONS or SAY_THIS
 
 KNOW_THIS:
-max 25 words
+maximum 25 words
 
 SAY_THIS:
-max 22 words
+maximum 22 words
 
 QUESTIONS:
-2-3 questions
-max 13 words each
+2 or 3 questions
+maximum 13 words each
+
+If claim verification says CONTRADICTED or MISLEADING with high confidence and worth_interrupting=true, consider a neutral correction.
+
+If numerical intelligence is useful, consider its strongest implication.
 
 Return ONLY valid JSON:
 
@@ -1940,16 +2227,18 @@ ${recent || 'None'}
     }
 
     if (
-      card.type ===
-      'QUESTIONS'
+      card.type === 'QUESTIONS'
     ) {
       const questions =
         Array.isArray(
           card.questions,
         )
           ? card.questions
-              .map(q =>
-                String(q).trim(),
+              .map(
+                question =>
+                  String(
+                    question,
+                  ).trim(),
               )
               .filter(Boolean)
               .slice(0, 3)
@@ -1969,10 +2258,8 @@ ${recent || 'None'}
     }
 
     if (
-      card.type ===
-        'KNOW_THIS' ||
-      card.type ===
-        'SAY_THIS'
+      card.type === 'KNOW_THIS' ||
+      card.type === 'SAY_THIS'
     ) {
       const body =
         String(
@@ -1995,8 +2282,7 @@ ${recent || 'None'}
 
   function cardSignature(card) {
     if (
-      card.type ===
-      'QUESTIONS'
+      card.type === 'QUESTIONS'
     ) {
       return normalizedText(
         (
@@ -2055,23 +2341,14 @@ ${recent || 'None'}
       return
     }
 
-    if (
-      g2Socket.readyState !==
-      WebSocket.OPEN
-    ) {
-      return
-    }
-
     for (
       const card of
       cleanCards
     ) {
-      g2Socket.send(
-        JSON.stringify({
-          type: 'card',
-          card,
-        }),
-      )
+      sendToG2({
+        type: 'card',
+        card,
+      })
 
       recentCards.push(card)
 
@@ -2082,10 +2359,10 @@ ${recent || 'None'}
     }
 
     if (
-      recentCards.length > 20
+      recentCards.length > 24
     ) {
       recentCards =
-        recentCards.slice(-20)
+        recentCards.slice(-24)
     }
 
     lastBundleAt =
@@ -2133,8 +2410,7 @@ ${recent || 'None'}
 
           if (
             !trigger ||
-            trigger.interrupt !==
-              true ||
+            trigger.interrupt !== true ||
             Number(
               trigger.relevance || 0,
             ) <
@@ -2247,11 +2523,6 @@ ${recent || 'None'}
           sessionContext.course,
         )
       ) {
-        console.log(
-          'USING PRELOADED COURSE:',
-          sessionContext.course,
-        )
-
         return {
           area: 'SCHOOL',
 
@@ -2288,28 +2559,20 @@ ${recent || 'None'}
   }
 
   // ==================================================
-  // NOTES GENERATION
+  // NOTE GENERATION
   // ==================================================
 
   async function generateNotes() {
     if (
-      noteTranscript.length ===
-      0
+      noteTranscript.length === 0
     ) {
-      if (
-        g2Socket.readyState ===
-        WebSocket.OPEN
-      ) {
-        g2Socket.send(
-          JSON.stringify({
-            type:
-              'notes_error',
+      sendToG2({
+        type:
+          'notes_error',
 
-            text:
-              'No speech was captured.',
-          }),
-        )
-      }
+        text:
+          'No speech was captured.',
+      })
 
       return
     }
@@ -2326,7 +2589,8 @@ ${recent || 'None'}
       const response =
         await anthropic.messages.create({
           model: 'claude-sonnet-5',
-          max_tokens: 5000,
+
+          max_tokens: 5500,
 
           system: `
 You are an expert AI note taker.
@@ -2358,6 +2622,7 @@ Include:
 - main concepts
 - definitions
 - formulas
+- variable meanings
 - explanations
 - examples
 - professor emphasis
@@ -2375,6 +2640,7 @@ Include:
 - owners
 - deadlines
 - risks
+- blockers
 - unresolved questions
 - follow-ups
 
@@ -2398,6 +2664,10 @@ Include:
 GENERAL:
 Organize the important ideas clearly.
 
+==================================================
+MANDATORY ENDING
+==================================================
+
 EVERY NOTE MUST END WITH:
 
 AI SUMMARY & EXPLANATION
@@ -2409,11 +2679,11 @@ Include:
 3. Most Important Things to Remember
 4. Connections
 
-For SCHOOL also include:
+For SCHOOL:
 
 5. How to Study This
 
-For SALES or MEETING also include:
+For SALES or MEETING:
 
 5. What I Would Do Next
 
@@ -2443,9 +2713,7 @@ ${transcript}
 
       const parsed =
         parseClaudeJson(
-          extractText(
-            response,
-          ),
+          extractText(response),
         )
 
       if (
@@ -2489,49 +2757,35 @@ ${transcript}
         destination.path,
       )
 
-      if (
-        g2Socket.readyState ===
-        WebSocket.OPEN
-      ) {
-        g2Socket.send(
-          JSON.stringify({
-            type:
-              'notes_saved',
+      sendToG2({
+        type:
+          'notes_saved',
 
-            title:
-              parsed.title,
+        title:
+          parsed.title,
 
-            folder:
-              destination.path,
+        folder:
+          destination.path,
 
-            summary:
-              parsed.summary || '',
+        summary:
+          parsed.summary || '',
 
-            url:
-              doc.webViewLink || '',
-          }),
-        )
-      }
+        url:
+          doc.webViewLink || '',
+      })
     } catch (error) {
       console.error(
         'NOTE SAVE ERROR:',
         error,
       )
 
-      if (
-        g2Socket.readyState ===
-        WebSocket.OPEN
-      ) {
-        g2Socket.send(
-          JSON.stringify({
-            type:
-              'notes_error',
+      sendToG2({
+        type:
+          'notes_error',
 
-            text:
-              'Could not save notes.',
-          }),
-        )
-      }
+        text:
+          'Could not save notes.',
+      })
     }
   }
 
@@ -2547,17 +2801,10 @@ ${transcript}
       'NOTE TAKING STARTED',
     )
 
-    if (
-      g2Socket.readyState ===
-      WebSocket.OPEN
-    ) {
-      g2Socket.send(
-        JSON.stringify({
-          type:
-            'notes_started',
-        }),
-      )
-    }
+    sendToG2({
+      type:
+        'notes_started',
+    })
   }
 
   async function stopNotes() {
@@ -2567,21 +2814,154 @@ ${transcript}
 
     noteTaking = false
 
-    if (
-      g2Socket.readyState ===
-      WebSocket.OPEN
-    ) {
-      g2Socket.send(
-        JSON.stringify({
-          type:
-            'notes_processing',
-        }),
-      )
-    }
+    sendToG2({
+      type:
+        'notes_processing',
+    })
 
     await generateNotes()
 
     noteTranscript = []
+  }
+
+  // ==================================================
+  // MANUAL VOICE COMMANDS
+  // ==================================================
+
+  async function maybeHandleCommand(
+    question,
+  ) {
+    const normalized =
+      normalizedText(question)
+
+    // ----------------------------------------------
+    // NEW / RESET SESSION
+    // ----------------------------------------------
+
+    const resetCommands = [
+      'new session',
+      'reset session',
+      'new context',
+      'reset context',
+      'change context',
+      'new meeting',
+      'new class',
+    ]
+
+    if (
+      resetCommands.some(
+        phrase =>
+          normalized.includes(
+            phrase,
+          ),
+      )
+    ) {
+      console.log(
+        'VOICE COMMAND: RESET SESSION',
+      )
+
+      await resetSession()
+
+      return true
+    }
+
+    // ----------------------------------------------
+    // CHANGE MODE
+    // ----------------------------------------------
+
+    const modeAliases = {
+      sales: 'SALES',
+      meeting: 'MEETING',
+      school: 'SCHOOL',
+      general: 'GENERAL',
+    }
+
+    for (
+      const [
+        spoken,
+        targetMode,
+      ] of
+      Object.entries(
+        modeAliases,
+      )
+    ) {
+      if (
+        normalized.includes(
+          `change mode to ${spoken}`,
+        ) ||
+        normalized.includes(
+          `switch to ${spoken}`,
+        ) ||
+        normalized.includes(
+          `${spoken} mode`,
+        )
+      ) {
+        console.log(
+          'VOICE COMMAND: MODE',
+          targetMode,
+        )
+
+        if (noteTaking) {
+          await stopNotes()
+        }
+
+        mode = targetMode
+
+        clearLiveSessionState()
+
+        sendToG2({
+          type:
+            'mode_changed',
+
+          mode,
+        })
+
+        await sleep(100)
+
+        sendToG2({
+          type:
+            'session_reset',
+
+          mode,
+        })
+
+        return true
+      }
+    }
+
+    // ----------------------------------------------
+    // START NOTES
+    // ----------------------------------------------
+
+    if (
+      normalized ===
+        'start notes' ||
+      normalized.includes(
+        'start taking notes',
+      )
+    ) {
+      startNotes()
+
+      return true
+    }
+
+    // ----------------------------------------------
+    // STOP NOTES
+    // ----------------------------------------------
+
+    if (
+      normalized ===
+        'stop notes' ||
+      normalized.includes(
+        'stop taking notes',
+      )
+    ) {
+      await stopNotes()
+
+      return true
+    }
+
+    return false
   }
 
   // ==================================================
@@ -2591,22 +2971,38 @@ ${transcript}
   async function answerManualAsk(
     question,
   ) {
+    console.log(
+      'MANUAL ASK:',
+      question,
+    )
+
+    if (
+      await maybeHandleCommand(
+        question,
+      )
+    ) {
+      return
+    }
+
     const response =
       await anthropic.messages.create({
         model: 'claude-sonnet-5',
+
         max_tokens: 550,
 
         system: `
-You answer a direct smart-glasses question.
+Answer a direct smart-glasses question.
 
 ${modePrompt()}
 
 Use:
-- session setup context
-- preloaded company/course context
+- session setup
+- preloaded intelligence
 - live conversation
 
 Be concise and direct.
+
+If numbers are involved, calculate carefully.
 
 Maximum 70 words.
 `,
@@ -2646,23 +3042,14 @@ ${question}
       })
 
     const answer =
-      extractText(
-        response,
-      )
+      extractText(response)
 
-    if (
-      g2Socket.readyState ===
-      WebSocket.OPEN
-    ) {
-      g2Socket.send(
-        JSON.stringify({
-          type:
-            'manual_answer',
+    sendToG2({
+      type:
+        'manual_answer',
 
-          text: answer,
-        }),
-      )
-    }
+      text: answer,
+    })
   }
 
   function finishManualAsk() {
@@ -2689,7 +3076,12 @@ ${question}
     if (question) {
       answerManualAsk(
         question,
-      )
+      ).catch(error => {
+        console.error(
+          'Manual ask error:',
+          error,
+        )
+      })
     }
   }
 
@@ -2708,7 +3100,84 @@ ${question}
   }
 
   // ==================================================
-  // TRANSCRIPT
+  // RESTORE AFTER RECONNECT
+  // ==================================================
+
+  async function restoreSession(payload) {
+    const requestedMode =
+      String(
+        payload.mode || '',
+      ).toUpperCase()
+
+    if (
+      [
+        'SALES',
+        'GENERAL',
+        'MEETING',
+        'SCHOOL',
+      ].includes(
+        requestedMode,
+      )
+    ) {
+      mode = requestedMode
+    }
+
+    if (payload.context) {
+      sessionContext = {
+        raw:
+          String(
+            payload.context.raw ||
+              '',
+          ),
+
+        summary:
+          String(
+            payload.context.summary ||
+              '',
+          ),
+
+        company:
+          String(
+            payload.context.company ||
+              '',
+          ),
+
+        course:
+          String(
+            payload.context.course ||
+              '',
+          ),
+
+        topic:
+          String(
+            payload.context.topic ||
+              '',
+          ),
+
+        modeHint:
+          mode,
+      }
+
+      await preloadSessionIntel()
+    }
+
+    sendToG2({
+      type:
+        'session_restored',
+
+      mode,
+
+      context:
+        sessionContext,
+    })
+
+    console.log(
+      'SESSION RESTORED AFTER RECONNECT',
+    )
+  }
+
+  // ==================================================
+  // DEEPGRAM TRANSCRIPTS
   // ==================================================
 
   deepgramSocket.on(
@@ -2739,7 +3208,7 @@ ${question}
         }
 
         // ------------------------------------------
-        // SESSION CONTEXT CAPTURE
+        // CONTEXT CAPTURE
         // ------------------------------------------
 
         if (
@@ -2760,6 +3229,21 @@ ${question}
         }
 
         // ------------------------------------------
+        // MANUAL ASK
+        // Do not put assistant commands into notes.
+        // ------------------------------------------
+
+        if (manualAskActive) {
+          manualAskBuffer.push(
+            transcript,
+          )
+
+          scheduleManualAskFinish()
+
+          return
+        }
+
+        // ------------------------------------------
         // NOTES
         // ------------------------------------------
 
@@ -2775,21 +3259,7 @@ ${question}
         }
 
         // ------------------------------------------
-        // MANUAL ASK
-        // ------------------------------------------
-
-        if (manualAskActive) {
-          manualAskBuffer.push(
-            transcript,
-          )
-
-          scheduleManualAskFinish()
-
-          return
-        }
-
-        // ------------------------------------------
-        // NORMAL JARVIS CONVERSATION
+        // NORMAL LIVE CONTEXT
         // ------------------------------------------
 
         conversation.push(
@@ -2819,7 +3289,7 @@ ${question}
   )
 
   // ==================================================
-  // CONTROLS
+  // CONTROL MESSAGES
   // ==================================================
 
   function handleControlMessage(
@@ -2851,14 +3321,12 @@ ${question}
           mode,
         )
 
-        g2Socket.send(
-          JSON.stringify({
-            type:
-              'mode_changed',
+        sendToG2({
+          type:
+            'mode_changed',
 
-            mode,
-          }),
-        )
+          mode,
+        })
       }
 
       return
@@ -2901,17 +3369,10 @@ ${question}
         contextCaptureTimer = null
       }
 
-      if (
-        g2Socket.readyState ===
-        WebSocket.OPEN
-      ) {
-        g2Socket.send(
-          JSON.stringify({
-            type:
-              'context_skipped',
-          }),
-        )
-      }
+      sendToG2({
+        type:
+          'context_skipped',
+      })
 
       return
     }
@@ -2933,6 +3394,14 @@ ${question}
       manualAskActive = false
       manualAskBuffer = []
 
+      if (manualAskTimer) {
+        clearTimeout(
+          manualAskTimer,
+        )
+
+        manualAskTimer = null
+      }
+
       return
     }
 
@@ -2941,6 +3410,7 @@ ${question}
       'notes_start'
     ) {
       startNotes()
+
       return
     }
 
@@ -2948,8 +3418,33 @@ ${question}
       payload.type ===
       'notes_stop'
     ) {
-      stopNotes()
+      stopNotes().catch(
+        console.error,
+      )
+
       return
+    }
+
+    if (
+      payload.type ===
+      'reset_session'
+    ) {
+      resetSession().catch(
+        console.error,
+      )
+
+      return
+    }
+
+    if (
+      payload.type ===
+      'restore_session'
+    ) {
+      restoreSession(
+        payload,
+      ).catch(
+        console.error,
+      )
     }
   }
 
@@ -2982,12 +3477,24 @@ ${question}
       }
 
       if (
+        typeof data === 'string'
+      ) {
+        try {
+          handleControlMessage(
+            JSON.parse(data),
+          )
+
+          return
+        } catch {
+          // continue
+        }
+      }
+
+      if (
         deepgramSocket.readyState ===
         WebSocket.OPEN
       ) {
-        deepgramSocket.send(
-          data,
-        )
+        deepgramSocket.send(data)
       }
     },
   )
@@ -2999,6 +3506,10 @@ ${question}
   g2Socket.on(
     'close',
     () => {
+      console.log(
+        'G2 disconnected',
+      )
+
       if (
         noteTaking &&
         noteTranscript.length > 0
@@ -3031,10 +3542,6 @@ ${question}
       ) {
         deepgramSocket.close()
       }
-
-      console.log(
-        'G2 disconnected',
-      )
     },
   )
 
@@ -3061,7 +3568,7 @@ server.listen(
   '0.0.0.0',
   () => {
     console.log(
-      `G2 JARVIS v9 running on port ${PORT}`,
+      `G2 JARVIS v10 running on port ${PORT}`,
     )
   },
 )
