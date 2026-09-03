@@ -12,6 +12,21 @@ const bridge =
 const SERVER_URL =
   'wss://g2-copilot-production.up.railway.app/audio'
 
+// ==================================================
+// RECONNECT-SAFE SESSION ID
+// Same ID survives WebSocket reconnects
+// during this app launch.
+// ==================================================
+
+const CLIENT_SESSION_ID =
+  `g2_${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2, 10)}`
+
+// ==================================================
+// TYPES
+// ==================================================
+
 type Mode =
   | 'SALES'
   | 'GENERAL'
@@ -56,17 +71,24 @@ const courseOptions = [
   'MATH 340',
   'LIS 462',
   'COMP SCI 320',
-  'OTHER / NO CLASS',
+  'NO CLASS',
+]
+
+const contextOptions = [
+  'ADD CONTEXT',
+  'NO CONTEXT',
 ]
 
 // ==================================================
 // STATE
 // ==================================================
 
-let mode: Mode = 'SALES'
-let modeIndex = 0
+let mode: Mode =
+  'SALES'
 
+let modeIndex = 0
 let courseIndex = 0
+let contextOptionIndex = 0
 
 let selectingMode = true
 let selectingCourse = false
@@ -77,13 +99,17 @@ let speakingContext = false
 let manualAsk = false
 
 let notesActive = false
+let notesStarting = false
+let notesStopping = false
 let notesProcessing = false
 
 let currentContext:
   | SessionContext
   | null = null
 
-const cards: Card[] = []
+const cards: Card[] =
+  []
+
 let cardIndex = -1
 
 let socket:
@@ -91,6 +117,9 @@ let socket:
   | null = null
 
 let micStarted = false
+
+let sessionAttached = false
+let hasAttachedOnce = false
 
 let intentionalExit = false
 
@@ -100,6 +129,14 @@ let reconnectTimer:
 
 let reconnectAttempts = 0
 
+let cardTimer:
+  | ReturnType<typeof setTimeout>
+  | null = null
+
+let statusTimer:
+  | ReturnType<typeof setTimeout>
+  | null = null
+
 // ==================================================
 // DISPLAY
 // ==================================================
@@ -108,6 +145,7 @@ const mainText =
   new TextContainerProperty({
     xPosition: 0,
     yPosition: 0,
+
     width: 576,
     height: 288,
 
@@ -120,7 +158,7 @@ const mainText =
     containerName: 'main',
 
     content:
-      'G2 COPILOT\n\nStarting...',
+      'G2 COPILOT\n\nStarting…',
 
     isEventCapture: 1,
   })
@@ -141,10 +179,135 @@ function updateHud(
   bridge.textContainerUpgrade(
     new TextContainerUpgrade({
       containerID: 1,
-      containerName: 'main',
+
+      containerName:
+        'main',
+
       content,
     }),
   )
+}
+
+// ==================================================
+// HELPERS
+// ==================================================
+
+function clearCardTimer() {
+  if (cardTimer) {
+    clearTimeout(
+      cardTimer,
+    )
+
+    cardTimer = null
+  }
+}
+
+function clearStatusTimer() {
+  if (statusTimer) {
+    clearTimeout(
+      statusTimer,
+    )
+
+    statusTimer = null
+  }
+}
+
+function padLine(
+  left: string,
+  right: string,
+  width = 31,
+) {
+  const spaces =
+    Math.max(
+      2,
+
+      width -
+        left.length -
+        right.length,
+    )
+
+  return (
+    left +
+    ' '.repeat(
+      spaces,
+    ) +
+    right
+  )
+}
+
+function divider() {
+  return (
+    '────────────────────────────'
+  )
+}
+
+function liveStatus() {
+  if (notesProcessing) {
+    return '◌ SAVE'
+  }
+
+  if (notesStopping) {
+    return '◌ STOP'
+  }
+
+  if (notesStarting) {
+    return '◌ START'
+  }
+
+  if (notesActive) {
+    return '● REC'
+  }
+
+  return '● LIVE'
+}
+
+function primaryLabel() {
+  if (
+    currentContext?.course
+  ) {
+    return (
+      currentContext.course
+    )
+  }
+
+  if (
+    currentContext?.company
+  ) {
+    return (
+      currentContext.company
+    )
+  }
+
+  return mode
+}
+
+function secondaryLabel() {
+  if (
+    currentContext?.topic
+  ) {
+    return (
+      currentContext.topic
+    )
+  }
+
+  if (
+    mode === 'SCHOOL' &&
+    currentContext?.course
+  ) {
+    return 'Detecting topic…'
+  }
+
+  if (
+    currentContext?.summary &&
+    currentContext.summary !==
+      `${currentContext.course} class`
+  ) {
+    return (
+      currentContext.summary
+    )
+  }
+
+  return 'Listening…'
 }
 
 // ==================================================
@@ -152,6 +315,9 @@ function updateHud(
 // ==================================================
 
 function showModeMenu() {
+  clearCardTimer()
+  clearStatusTimer()
+
   selectingMode = true
   selectingCourse = false
 
@@ -159,17 +325,20 @@ function showModeMenu() {
   speakingContext = false
 
   updateHud(
-    'SELECT MODE\n\n' +
-      `> ${modes[modeIndex]}\n\n` +
-      '↑ ↓ change\n' +
-      'Tap: select',
+    'G2 COPILOT\n\n' +
+      'CHOOSE MODE\n\n' +
+      `      › ${modes[modeIndex]}\n` +
+      `        ${modeIndex + 1} / ${modes.length}\n\n` +
+      divider() +
+      '\n↑ ↓ CHOOSE        TAP SELECT',
   )
 }
 
 function changeMode(
   direction: number,
 ) {
-  modeIndex += direction
+  modeIndex +=
+    direction
 
   if (modeIndex < 0) {
     modeIndex =
@@ -187,10 +356,13 @@ function changeMode(
 }
 
 // ==================================================
-// SCHOOL COURSE MENU
+// SCHOOL CLASS MENU
 // ==================================================
 
 function showCourseMenu() {
+  clearCardTimer()
+  clearStatusTimer()
+
   selectingMode = false
   selectingCourse = true
 
@@ -198,21 +370,27 @@ function showCourseMenu() {
   speakingContext = false
 
   updateHud(
-    'SELECT CLASS\n\n' +
-      `> ${courseOptions[courseIndex]}\n\n` +
-      '↑ ↓ change\n' +
-      'Tap: select',
+    'SCHOOL\n\n' +
+      'SELECT CLASS\n\n' +
+      `      › ${courseOptions[courseIndex]}\n` +
+      `        ${courseIndex + 1} / ${courseOptions.length}\n\n` +
+      divider() +
+      '\n↑ ↓ CHOOSE        TAP SELECT',
   )
 }
 
 function changeCourse(
   direction: number,
 ) {
-  courseIndex += direction
+  courseIndex +=
+    direction
 
-  if (courseIndex < 0) {
+  if (
+    courseIndex < 0
+  ) {
     courseIndex =
-      courseOptions.length - 1
+      courseOptions.length -
+      1
   }
 
   if (
@@ -227,18 +405,23 @@ function changeCourse(
 
 function selectCourse() {
   const selected =
-    courseOptions[courseIndex]
+    courseOptions[
+      courseIndex
+    ]
 
-  selectingCourse = false
+  selectingCourse =
+    false
 
   if (
     selected ===
-    'OTHER / NO CLASS'
+    'NO CLASS'
   ) {
-    currentContext = null
+    currentContext =
+      null
 
     sendControl({
-      type: 'context_skip',
+      type:
+        'context_skip',
     })
 
     listeningScreen()
@@ -250,26 +433,33 @@ function selectCourse() {
     summary:
       `${selected} class`,
 
-    course: selected,
+    course:
+      selected,
 
     company: '',
     topic: '',
   }
 
   updateHud(
-    'CLASS SELECTED\n\n' +
-      selected +
-      '\n\nPreparing...',
+    padLine(
+      selected,
+      '● LIVE',
+    ) +
+      '\n\n' +
+      '        Class ready\n\n' +
+      '        Listening…',
   )
 
   sendControl({
-    type: 'set_context',
+    type:
+      'set_context',
 
     context: {
       summary:
         `${selected} class`,
 
-      course: selected,
+      course:
+        selected,
 
       company: '',
       topic: '',
@@ -281,7 +471,10 @@ function selectCourse() {
 // SALES / MEETING CONTEXT
 // ==================================================
 
-function showContextChoice() {
+function showContextMenu() {
+  clearCardTimer()
+  clearStatusTimer()
+
   selectingMode = false
   selectingCourse = false
 
@@ -289,12 +482,55 @@ function showContextChoice() {
   speakingContext = false
 
   updateHud(
-    'ADD CONTEXT?\n\n' +
-      'Tap: speak context\n' +
-      '↓: skip\n\n' +
-      'Example:\n' +
-      '"ServiceNow AI meeting"',
+    `${mode}\n\n` +
+      'PREPARE SESSION\n\n' +
+      `      › ${contextOptions[contextOptionIndex]}\n` +
+      `        ${contextOptionIndex + 1} / ${contextOptions.length}\n\n` +
+      divider() +
+      '\n↑ ↓ CHOOSE        TAP SELECT',
   )
+}
+
+function changeContextOption(
+  direction: number,
+) {
+  contextOptionIndex +=
+    direction
+
+  if (
+    contextOptionIndex < 0
+  ) {
+    contextOptionIndex =
+      contextOptions.length -
+      1
+  }
+
+  if (
+    contextOptionIndex >=
+    contextOptions.length
+  ) {
+    contextOptionIndex = 0
+  }
+
+  showContextMenu()
+}
+
+function selectContextOption() {
+  const selected =
+    contextOptions[
+      contextOptionIndex
+    ]
+
+  if (
+    selected ===
+    'NO CONTEXT'
+  ) {
+    skipContext()
+
+    return
+  }
+
+  startContextCapture()
 }
 
 function startContextCapture() {
@@ -302,55 +538,80 @@ function startContextCapture() {
   speakingContext = true
 
   sendControl({
-    type: 'context_start',
+    type:
+      'context_start',
   })
 
   updateHud(
-    'SET CONTEXT\n\n' +
-      'Speak now...\n\n' +
-      'Tap: cancel',
+    padLine(
+      mode,
+      '◌ LISTEN',
+    ) +
+      '\n\n' +
+      '       Add context\n\n' +
+      '      Speak naturally\n\n' +
+      divider() +
+      '\n          TAP CANCEL',
   )
 }
 
 function cancelContextCapture() {
-  speakingContext = false
-  choosingContext = false
+  speakingContext =
+    false
+
+  choosingContext =
+    false
 
   sendControl({
-    type: 'context_skip',
+    type:
+      'context_skip',
   })
 
   listeningScreen()
 }
 
 function skipContext() {
-  choosingContext = false
-  speakingContext = false
+  choosingContext =
+    false
 
-  currentContext = null
+  speakingContext =
+    false
+
+  currentContext =
+    null
 
   sendControl({
-    type: 'context_skip',
+    type:
+      'context_skip',
   })
 
   listeningScreen()
 }
 
 // ==================================================
-// ROUTE AFTER MODE SELECTION
+// MODE ROUTING
 // ==================================================
 
 function enterSelectedMode() {
-  if (mode === 'SCHOOL') {
+  cardIndex = -1
+
+  if (
+    mode === 'SCHOOL'
+  ) {
     showCourseMenu()
+
     return
   }
 
-  if (mode === 'GENERAL') {
-    currentContext = null
+  if (
+    mode === 'GENERAL'
+  ) {
+    currentContext =
+      null
 
     sendControl({
-      type: 'context_skip',
+      type:
+        'context_skip',
     })
 
     listeningScreen()
@@ -358,58 +619,71 @@ function enterSelectedMode() {
     return
   }
 
-  showContextChoice()
+  contextOptionIndex =
+    0
+
+  showContextMenu()
 }
 
 // ==================================================
-// LISTENING SCREEN
+// RESTING HUD
 // ==================================================
 
 function listeningScreen() {
+  clearCardTimer()
+  clearStatusTimer()
+
   selectingMode = false
   selectingCourse = false
 
   choosingContext = false
   speakingContext = false
 
-  const notes =
+  cardIndex = -1
+
+  const footerRight =
     notesActive
-      ? 'NOTES: RECORDING'
-      : notesProcessing
-        ? 'NOTES: SAVING...'
-        : 'NOTES: OFF'
+      ? '↓ STOP'
+      : '↓ NOTES'
 
-  let contextLine = ''
+  let centerStatus =
+    '        Listening…'
 
-  if (
-    currentContext?.course
-  ) {
-    contextLine =
-      currentContext.topic
-        ? `${currentContext.course} · ${currentContext.topic}`
-        : currentContext.course
+  if (notesStarting) {
+    centerStatus =
+      '      Starting notes…'
   } else if (
-    currentContext?.company
+    notesStopping
   ) {
-    contextLine =
-      currentContext.company
+    centerStatus =
+      '      Stopping notes…'
   } else if (
-    currentContext?.topic
+    notesProcessing
   ) {
-    contextLine =
-      currentContext.topic
+    centerStatus =
+      '      Building notes…'
+  } else if (
+    notesActive
+  ) {
+    centerStatus =
+      '        Taking notes'
   }
 
   updateHud(
-    `${mode} MODE\n` +
-      (
-        contextLine
-          ? `${contextLine}\n`
-          : ''
-      ) +
-      `${notes}\n\n` +
-      'Tap: ask me\n' +
-      '↓ notes · ↑ cards',
+    padLine(
+      primaryLabel(),
+      liveStatus(),
+    ) +
+      '\n\n' +
+      `        ${secondaryLabel()}\n\n` +
+      centerStatus +
+      '\n\n' +
+      divider() +
+      '\n' +
+      padLine(
+        '↑ HISTORY  TAP ASK',
+        footerRight,
+      ),
   )
 }
 
@@ -417,59 +691,233 @@ function listeningScreen() {
 // CARDS
 // ==================================================
 
-function renderCard(
+function cardContainsMath(
+  card: Card,
+) {
+  const text =
+    String(
+      card.body || '',
+    )
+
+  return (
+    /[$€£]/.test(text) ||
+    /\b\d+(?:\.\d+)?\s*%/.test(
+      text,
+    ) ||
+    /[×÷=]/.test(
+      text,
+    ) ||
+    /\b(?:annual|monthly|discount|savings|spend|price)\b/i.test(
+      text,
+    )
+  )
+}
+
+function cardTitle(
   card: Card,
 ) {
   if (
     card.type ===
+    'QUESTIONS'
+  ) {
+    return '? ASK'
+  }
+
+  if (
+    card.type ===
     'SAY_THIS'
   ) {
-    return (
-      'SAY THIS\n\n' +
-      (card.body || '') +
-      '\n\n↑ previous   ↓ next'
-    )
+    return '→ SAY'
   }
+
+  if (
+    Number(
+      card.urgency ||
+        0,
+    ) >= 9
+  ) {
+    return '! IMPORTANT'
+  }
+
+  if (
+    cardContainsMath(
+      card,
+    )
+  ) {
+    return '∑ QUICK MATH'
+  }
+
+  return '◆ INSIGHT'
+}
+
+function cardCounter() {
+  if (
+    cardIndex < 0 ||
+    cards.length === 0
+  ) {
+    return ''
+  }
+
+  return (
+    `${cardIndex + 1} / ${cards.length}`
+  )
+}
+
+function renderCard(
+  card: Card,
+) {
+  let body = ''
 
   if (
     card.type ===
     'QUESTIONS'
   ) {
-    const lines =
-      (
-        card.questions || []
-      )
-        .slice(0, 3)
-        .map(
-          (
-            question,
-            index,
-          ) =>
-            `${index + 1}. ${question}`,
-        )
-        .join('\n')
+    body =
+      card.questions?.[0] ||
+      ''
+  } else if (
+    card.type ===
+    'SAY_THIS'
+  ) {
+    const raw =
+      String(
+        card.body || '',
+      ).trim()
 
-    return (
-      'QUESTIONS\n\n' +
-      lines +
-      '\n\n↑ previous   ↓ next'
-    )
+    body =
+      raw.startsWith(
+        '"',
+      ) ||
+      raw.startsWith(
+        '“',
+      )
+        ? raw
+        : `“${raw}”`
+  } else {
+    body =
+      card.body || ''
   }
 
   return (
-    'KNOW THIS\n\n' +
-    (card.body || '') +
-    '\n\n↑ previous   ↓ next'
+    padLine(
+      cardTitle(card),
+      cardCounter(),
+    ) +
+      '\n\n' +
+      body +
+      '\n\n' +
+      divider() +
+      '\n↑ PREV     TAP CLOSE     ↓ NEXT'
   )
 }
 
-function showCurrentCard() {
+function expandCard(
+  card: Card,
+): Card[] {
+  if (
+    card.type !==
+      'QUESTIONS' ||
+    !Array.isArray(
+      card.questions,
+    ) ||
+    card.questions.length <=
+      1
+  ) {
+    return [card]
+  }
+
+  return card.questions
+    .filter(Boolean)
+    .map(
+      question => ({
+        ...card,
+
+        questions: [
+          question,
+        ],
+      }),
+    )
+}
+
+function trimHistory() {
+  const MAX_CARDS =
+    24
+
+  if (
+    cards.length <=
+    MAX_CARDS
+  ) {
+    return 0
+  }
+
+  const removeCount =
+    cards.length -
+    MAX_CARDS
+
+  cards.splice(
+    0,
+    removeCount,
+  )
+
+  return removeCount
+}
+
+function scheduleAmbientDismiss(
+  card: Card,
+) {
+  clearCardTimer()
+
+  const relevance =
+    Number(
+      card.relevance ||
+        0,
+    )
+
+  const urgency =
+    Number(
+      card.urgency ||
+        0,
+    )
+
+  if (
+    relevance >= 9 ||
+    urgency >= 9
+  ) {
+    return
+  }
+
+  cardTimer =
+    setTimeout(
+      () => {
+        cardTimer =
+          null
+
+        if (
+          cardIndex >= 0 &&
+          !manualAsk &&
+          !speakingContext
+        ) {
+          cardIndex =
+            -1
+
+          listeningScreen()
+        }
+      },
+      8000,
+    )
+}
+
+function showCurrentCard(
+  interruption = false,
+) {
+  clearCardTimer()
+
   if (
     cardIndex < 0 ||
     cards.length === 0
   ) {
-    cardIndex = -1
     listeningScreen()
+
     return
   }
 
@@ -483,29 +931,59 @@ function showCurrentCard() {
 
   updateHud(
     renderCard(
-      cards[cardIndex],
+      cards[
+        cardIndex
+      ],
     ),
   )
+
+  if (interruption) {
+    scheduleAmbientDismiss(
+      cards[
+        cardIndex
+      ],
+    )
+  }
 }
 
 function addCard(
-  card: Card,
+  incoming: Card,
 ) {
+  const expanded =
+    expandCard(
+      incoming,
+    )
+
+  if (
+    expanded.length ===
+    0
+  ) {
+    return
+  }
+
   const wasListening =
     cardIndex === -1
 
-  cards.push(card)
+  const oldLength =
+    cards.length
+
+  cards.push(
+    ...expanded,
+  )
+
+  const removed =
+    trimHistory()
 
   if (
-    cards.length > 20
+    cardIndex >= 0
   ) {
-    cards.shift()
+    cardIndex =
+      Math.max(
+        0,
 
-    if (
-      cardIndex > 0
-    ) {
-      cardIndex -= 1
-    }
+        cardIndex -
+          removed,
+      )
   }
 
   if (
@@ -513,52 +991,72 @@ function addCard(
     !manualAsk &&
     !speakingContext &&
     !choosingContext &&
-    !selectingCourse
+    !selectingCourse &&
+    !selectingMode
   ) {
     cardIndex =
-      cards.length - 1
+      Math.max(
+        0,
 
-    showCurrentCard()
+        oldLength -
+          removed,
+      )
+
+    showCurrentCard(
+      true,
+    )
   }
 }
 
 function addBriefingCards(
   briefing: Card[],
 ) {
+  const expanded =
+    briefing.flatMap(
+      expandCard,
+    )
+
   if (
-    briefing.length === 0
+    expanded.length ===
+    0
   ) {
     listeningScreen()
+
     return
   }
 
-  for (
-    const card of briefing
-  ) {
-    cards.push(card)
-  }
+  const oldLength =
+    cards.length
 
-  while (
-    cards.length > 20
-  ) {
-    cards.shift()
-  }
+  cards.push(
+    ...expanded,
+  )
+
+  const removed =
+    trimHistory()
 
   cardIndex =
     Math.max(
       0,
-      cards.length -
-        briefing.length,
+
+      oldLength -
+        removed,
     )
 
-  showCurrentCard()
+  showCurrentCard(
+    true,
+  )
 }
 
 function previousCard() {
+  clearCardTimer()
+
   if (
-    cards.length === 0
+    cards.length ===
+    0
   ) {
     listeningScreen()
+
     return
   }
 
@@ -570,17 +1068,24 @@ function previousCard() {
   } else if (
     cardIndex > 0
   ) {
-    cardIndex -= 1
+    cardIndex -=
+      1
   }
 
-  showCurrentCard()
+  showCurrentCard(
+    false,
+  )
 }
 
 function nextCard() {
+  clearCardTimer()
+
   if (
-    cards.length === 0
+    cards.length ===
+    0
   ) {
     listeningScreen()
+
     return
   }
 
@@ -590,7 +1095,10 @@ function nextCard() {
     cardIndex =
       cards.length - 1
 
-    showCurrentCard()
+    showCurrentCard(
+      false,
+    )
+
     return
   }
 
@@ -598,21 +1106,29 @@ function nextCard() {
     cardIndex <
     cards.length - 1
   ) {
-    cardIndex += 1
+    cardIndex +=
+      1
 
-    showCurrentCard()
+    showCurrentCard(
+      false,
+    )
+
     return
   }
 
   cardIndex = -1
+
   listeningScreen()
 }
 
 // ==================================================
-// CLEAR SESSION UI
+// RESET UI
 // ==================================================
 
 function clearSessionUi() {
+  clearCardTimer()
+  clearStatusTimer()
+
   cards.splice(
     0,
     cards.length,
@@ -620,54 +1136,117 @@ function clearSessionUi() {
 
   cardIndex = -1
 
-  currentContext = null
+  currentContext =
+    null
 
-  manualAsk = false
+  manualAsk =
+    false
 
-  notesActive = false
-  notesProcessing = false
+  notesActive =
+    false
+
+  notesStarting =
+    false
+
+  notesStopping =
+    false
+
+  notesProcessing =
+    false
 }
 
 // ==================================================
-// NOTES
+// NOTES — SERVER CONFIRMED
 // ==================================================
 
+function showNotesTransportError(
+  text: string,
+) {
+  updateHud(
+    '! NOTES\n\n' +
+      text +
+      '\n\n' +
+      divider() +
+      '\n        Reconnecting…',
+  )
+}
+
 function toggleNotes() {
-  if (notesProcessing) {
+  clearCardTimer()
+  clearStatusTimer()
+
+  if (
+    notesStarting ||
+    notesStopping ||
+    notesProcessing
+  ) {
     return
   }
 
   if (!notesActive) {
-    notesActive = true
-
-    sendControl({
-      type: 'notes_start',
-    })
+    notesStarting =
+      true
 
     updateHud(
-      'NOTES\n\n' +
-        'Recording started...',
+      padLine(
+        primaryLabel(),
+        '◌ START',
+      ) +
+        '\n\n' +
+        '      Starting notes\n\n' +
+        '    Waiting for server…',
     )
 
-    setTimeout(
-      listeningScreen,
-      700,
-    )
+    const sent =
+      sendControl({
+        type:
+          'notes_start',
+      })
+
+    if (!sent) {
+      notesStarting =
+        false
+
+      showNotesTransportError(
+        'Could not start recording.',
+      )
+    }
 
     return
   }
 
-  notesActive = false
-  notesProcessing = true
-
-  sendControl({
-    type: 'notes_stop',
-  })
+  notesStopping =
+    true
 
   updateHud(
-    'NOTES\n\n' +
-      'Generating notes...',
+    padLine(
+      primaryLabel(),
+      '◌ STOP',
+    ) +
+      '\n\n' +
+      '      Ending notes\n\n' +
+      '    Waiting for server…',
   )
+
+  const sent =
+    sendControl({
+      type:
+        'notes_stop',
+    })
+
+  if (!sent) {
+    notesStopping =
+      false
+
+    // Recording remains active on backend
+    // until confirmed otherwise.
+    notesActive =
+      true
+
+    showNotesTransportError(
+      'Recording preserved.',
+    )
+  }
 }
 
 // ==================================================
@@ -675,8 +1254,13 @@ function toggleNotes() {
 // ==================================================
 
 function startManualAsk() {
-  manualAsk = true
-  cardIndex = -1
+  clearCardTimer()
+
+  manualAsk =
+    true
+
+  cardIndex =
+    -1
 
   sendControl({
     type:
@@ -684,14 +1268,21 @@ function startManualAsk() {
   })
 
   updateHud(
-    'ASK ME\n\n' +
-      'Speak your question...\n\n' +
-      '"new session" resets',
+    padLine(
+      'ASK JARVIS',
+      '◌ LISTEN',
+    ) +
+      '\n\n' +
+      '       Ask anything\n\n' +
+      '        Listening…\n\n' +
+      divider() +
+      '\n          TAP CANCEL',
   )
 }
 
 function cancelManualAsk() {
-  manualAsk = false
+  manualAsk =
+    false
 
   sendControl({
     type:
@@ -702,7 +1293,7 @@ function cancelManualAsk() {
 }
 
 // ==================================================
-// SOCKET HELPERS
+// SOCKET
 // ==================================================
 
 function socketOpen() {
@@ -716,8 +1307,10 @@ function socketOpen() {
 function sendControl(
   payload: object,
 ) {
-  if (!socketOpen()) {
-    return
+  if (
+    !socketOpen()
+  ) {
+    return false
   }
 
   socket?.send(
@@ -725,11 +1318,9 @@ function sendControl(
       payload,
     ),
   )
-}
 
-// ==================================================
-// MICROPHONE
-// ==================================================
+  return true
+}
 
 async function ensureMicrophone() {
   if (micStarted) {
@@ -742,7 +1333,8 @@ async function ensureMicrophone() {
     )
 
   if (started) {
-    micStarted = true
+    micStarted =
+      true
   }
 
   return started
@@ -760,38 +1352,54 @@ function scheduleReconnect() {
     return
   }
 
-  reconnectAttempts += 1
+  sessionAttached =
+    false
+
+  reconnectAttempts +=
+    1
 
   const delay =
     Math.min(
-      reconnectAttempts * 2000,
+      reconnectAttempts *
+        2000,
+
       10000,
     )
 
   updateHud(
-    'G2 COPILOT\n\n' +
-      'Connection lost.\n' +
-      'Reconnecting...',
+    padLine(
+      primaryLabel(),
+      '◌',
+    ) +
+      '\n\n' +
+      '     Connection lost\n\n' +
+      (
+        notesActive
+          ? '     Notes preserved'
+          : '      Reconnecting…'
+      ),
   )
 
   reconnectTimer =
     setTimeout(
       () => {
-        reconnectTimer = null
+        reconnectTimer =
+          null
 
-        connectSocket(true)
+        connectSocket()
       },
       delay,
     )
 }
 
 // ==================================================
-// SERVER CONNECTION
+// CONNECTION
 // ==================================================
 
-function connectSocket(
-  reconnecting = false,
-) {
+function connectSocket() {
+  sessionAttached =
+    false
+
   socket =
     new WebSocket(
       SERVER_URL,
@@ -802,44 +1410,40 @@ function connectSocket(
 
   socket.onopen =
     async () => {
-      console.log(
-        'Connected to cloud server',
-      )
+      reconnectAttempts =
+        0
 
-      reconnectAttempts = 0
+      // IMPORTANT:
+      // attach session before trusting
+      // this socket for audio/control.
+      sendControl({
+        type:
+          'hello',
+
+        sessionId:
+          CLIENT_SESSION_ID,
+      })
 
       const micOkay =
         await ensureMicrophone()
 
       if (!micOkay) {
         updateHud(
-          'G2 COPILOT\n\n' +
-            'Microphone failed.',
+          '! MICROPHONE\n\n' +
+            'Audio could not start.',
         )
 
         return
       }
 
-      if (reconnecting) {
-        sendControl({
-          type:
-            'restore_session',
-
-          mode,
-
-          context:
-            currentContext,
-        })
-
-        updateHud(
-          'G2 COPILOT\n\n' +
-            'Reconnected...',
-        )
-
-        return
-      }
-
-      showModeMenu()
+      updateHud(
+        padLine(
+          'G2 COPILOT',
+          '◌',
+        ) +
+          '\n\n' +
+          '     Restoring session…',
+      )
     }
 
   socket.onmessage =
@@ -850,196 +1454,34 @@ function connectSocket(
             event.data,
           )
 
-        // ------------------------------------------
-        // JARVIS CARD
-        // ------------------------------------------
+        // ----------------------------------------
+        // SESSION ATTACHED
+        // ----------------------------------------
 
         if (
           message.type ===
-            'card' &&
-          message.card
+          'session_attached'
         ) {
-          addCard(
-            message.card as Card,
-          )
+          sessionAttached =
+            true
 
-          return
-        }
+          if (
+            message.mode
+          ) {
+            mode =
+              message.mode as Mode
 
-        // ------------------------------------------
-        // MODE
-        // ------------------------------------------
-
-        if (
-          message.type ===
-          'mode_changed'
-        ) {
-          mode =
-            message.mode as Mode
-
-          const index =
-            modes.indexOf(mode)
-
-          if (index >= 0) {
-            modeIndex = index
-          }
-
-          return
-        }
-
-        // ------------------------------------------
-        // CONTEXT READY
-        // ------------------------------------------
-
-        if (
-          message.type ===
-          'context_ready'
-        ) {
-          speakingContext = false
-          choosingContext = false
-          selectingCourse = false
-
-          currentContext =
-            message.context || null
-
-          const briefing =
-            Array.isArray(
-              message.briefing,
-            )
-              ? (
-                  message.briefing as Card[]
-                )
-              : []
-
-          const label =
-            currentContext?.course ||
-            currentContext?.summary ||
-            currentContext?.company ||
-            'Context loaded'
-
-          updateHud(
-            (
-              mode === 'SCHOOL'
-                ? 'CLASS READY\n\n'
-                : 'CONTEXT READY\n\n'
-            ) +
-              label +
-              '\n\nListening...',
-          )
-
-          setTimeout(
-            () => {
-              addBriefingCards(
-                briefing,
+            const found =
+              modes.indexOf(
+                mode,
               )
-            },
-            900,
-          )
 
-          return
-        }
-
-        // ------------------------------------------
-        // TOPIC AUTO-DETECTED
-        // Do not interrupt the lecture.
-        // ------------------------------------------
-
-        if (
-          message.type ===
-          'context_updated'
-        ) {
-          currentContext =
-            message.context ||
-            currentContext
-
-          // Update state silently.
-          // We intentionally do NOT
-          // replace a card or interrupt notes.
-
-          return
-        }
-
-        if (
-          message.type ===
-          'context_skipped'
-        ) {
-          speakingContext = false
-          choosingContext = false
-
-          listeningScreen()
-          return
-        }
-
-        if (
-          message.type ===
-          'context_error'
-        ) {
-          speakingContext = false
-
-          updateHud(
-            'CONTEXT ERROR\n\n' +
-              String(
-                message.text ||
-                  'Could not load.',
-              ),
-          )
-
-          setTimeout(
-            listeningScreen,
-            1200,
-          )
-
-          return
-        }
-
-        // ------------------------------------------
-        // SESSION RESET
-        // ------------------------------------------
-
-        if (
-          message.type ===
-          'session_reset'
-        ) {
-          clearSessionUi()
-
-          if (message.mode) {
-            mode =
-              message.mode as Mode
-
-            const index =
-              modes.indexOf(mode)
-
-            if (index >= 0) {
-              modeIndex = index
+            if (
+              found >= 0
+            ) {
+              modeIndex =
+                found
             }
-          }
-
-          updateHud(
-            'NEW SESSION\n\n' +
-              `${mode} MODE`,
-          )
-
-          setTimeout(
-            () => {
-              enterSelectedMode()
-            },
-            700,
-          )
-
-          return
-        }
-
-        // ------------------------------------------
-        // SESSION RESTORED
-        // ------------------------------------------
-
-        if (
-          message.type ===
-          'session_restored'
-        ) {
-          if (message.mode) {
-            mode =
-              message.mode as Mode
           }
 
           if (
@@ -1057,45 +1499,274 @@ function connectSocket(
           ) {
             currentContext =
               message.context
+          } else {
+            currentContext =
+              null
           }
 
-          listeningScreen()
+          notesActive =
+            message.notesActive ===
+            true
+
+          notesStarting =
+            false
+
+          notesStopping =
+            false
+
+          notesProcessing =
+            false
+
+          const hadAttached =
+            hasAttachedOnce
+
+          hasAttachedOnce =
+            true
+
+          if (
+            hadAttached ||
+            message.resumed
+          ) {
+            listeningScreen()
+          } else {
+            showModeMenu()
+          }
+
           return
         }
 
-        // ------------------------------------------
-        // MANUAL ANSWER
-        // ------------------------------------------
-
         if (
           message.type ===
-          'manual_answer'
+          'session_attach_error'
         ) {
-          manualAsk = false
+          sessionAttached =
+            false
 
           updateHud(
-            'ANSWER\n\n' +
+            '! CONNECTION\n\n' +
               String(
-                message.text,
-              ) +
-              '\n\nTap: back',
+                message.text ||
+                  'Could not restore session.',
+              ),
           )
 
           return
         }
 
-        // ------------------------------------------
-        // NOTES
-        // ------------------------------------------
+        // ----------------------------------------
+        // CARD
+        // ----------------------------------------
+
+        if (
+          message.type ===
+            'card' &&
+          message.card
+        ) {
+          addCard(
+            message.card as Card,
+          )
+
+          return
+        }
+
+        // ----------------------------------------
+        // MODE
+        // ----------------------------------------
+
+        if (
+          message.type ===
+          'mode_changed'
+        ) {
+          mode =
+            message.mode as Mode
+
+          const found =
+            modes.indexOf(
+              mode,
+            )
+
+          if (
+            found >= 0
+          ) {
+            modeIndex =
+              found
+          }
+
+          return
+        }
+
+        // ----------------------------------------
+        // CONTEXT
+        // ----------------------------------------
+
+        if (
+          message.type ===
+          'context_ready'
+        ) {
+          speakingContext =
+            false
+
+          choosingContext =
+            false
+
+          selectingCourse =
+            false
+
+          currentContext =
+            message.context ||
+            currentContext
+
+          const briefing =
+            Array.isArray(
+              message.briefing,
+            )
+              ? message.briefing as Card[]
+              : []
+
+          const label =
+            currentContext?.course ||
+            currentContext?.company ||
+            currentContext?.summary ||
+            mode
+
+          updateHud(
+            padLine(
+              label,
+              liveStatus(),
+            ) +
+              '\n\n' +
+              (
+                mode ===
+                'SCHOOL'
+                  ? '       Class ready'
+                  : '      Context ready'
+              ) +
+              '\n\n' +
+              '        Listening…',
+          )
+
+          statusTimer =
+            setTimeout(
+              () => {
+                statusTimer =
+                  null
+
+                if (
+                  briefing.length >
+                  0
+                ) {
+                  addBriefingCards(
+                    briefing,
+                  )
+                } else {
+                  listeningScreen()
+                }
+              },
+              900,
+            )
+
+          return
+        }
+
+        if (
+          message.type ===
+          'context_updated'
+        ) {
+          currentContext =
+            message.context ||
+            currentContext
+
+          if (
+            cardIndex === -1 &&
+            !manualAsk &&
+            !speakingContext &&
+            !choosingContext
+          ) {
+            listeningScreen()
+          }
+
+          return
+        }
+
+        if (
+          message.type ===
+          'context_skipped'
+        ) {
+          speakingContext =
+            false
+
+          choosingContext =
+            false
+
+          listeningScreen()
+
+          return
+        }
+
+        if (
+          message.type ===
+          'context_error'
+        ) {
+          speakingContext =
+            false
+
+          updateHud(
+            '! CONTEXT\n\n' +
+              String(
+                message.text ||
+                  'Could not load context.',
+              ),
+          )
+
+          return
+        }
+
+        // ----------------------------------------
+        // NOTES — CONFIRMED BY SERVER
+        // ----------------------------------------
 
         if (
           message.type ===
           'notes_started'
         ) {
-          notesActive = true
-          notesProcessing = false
+          notesStarting =
+            false
 
-          listeningScreen()
+          notesStopping =
+            false
+
+          notesProcessing =
+            false
+
+          notesActive =
+            true
+
+          updateHud(
+            padLine(
+              primaryLabel(),
+              '● REC',
+            ) +
+              '\n\n' +
+              (
+                message.resumed
+                  ? '    Recording restored'
+                  : '      Notes started'
+              ) +
+              '\n\n' +
+              '        Taking notes',
+          )
+
+          statusTimer =
+            setTimeout(
+              () => {
+                statusTimer =
+                  null
+
+                listeningScreen()
+              },
+              900,
+            )
+
           return
         }
 
@@ -1103,12 +1774,26 @@ function connectSocket(
           message.type ===
           'notes_processing'
         ) {
-          notesActive = false
-          notesProcessing = true
+          notesStarting =
+            false
+
+          notesStopping =
+            false
+
+          notesActive =
+            false
+
+          notesProcessing =
+            true
 
           updateHud(
-            'NOTES\n\n' +
-              'Generating notes...',
+            padLine(
+              primaryLabel(),
+              '◌ SAVE',
+            ) +
+              '\n\n' +
+              '      Building notes\n\n' +
+              '     AI organizing…',
           )
 
           return
@@ -1118,17 +1803,44 @@ function connectSocket(
           message.type ===
           'notes_saved'
         ) {
-          notesActive = false
-          notesProcessing = false
+          notesStarting =
+            false
+
+          notesStopping =
+            false
+
+          notesActive =
+            false
+
+          notesProcessing =
+            false
 
           updateHud(
-            'NOTES SAVED\n\n' +
+            padLine(
+              '✓ SAVED',
+
+              currentContext?.course ||
+                mode,
+            ) +
+              '\n\n' +
               String(
                 message.title ||
                   'Session Notes',
               ) +
-              '\n\nTap: back',
+              '\n\n' +
+              '       Google Drive',
           )
+
+          statusTimer =
+            setTimeout(
+              () => {
+                statusTimer =
+                  null
+
+                listeningScreen()
+              },
+              2500,
+            )
 
           return
         }
@@ -1137,23 +1849,108 @@ function connectSocket(
           message.type ===
           'notes_error'
         ) {
-          notesActive = false
-          notesProcessing = false
+          notesStarting =
+            false
+
+          notesStopping =
+            false
+
+          notesProcessing =
+            false
 
           updateHud(
-            'NOTES ERROR\n\n' +
+            '! NOTES\n\n' +
               String(
                 message.text ||
-                  'Could not save.',
+                  'Notes failed.',
               ) +
-              '\n\nTap: back',
+              '\n\n' +
+              divider() +
+              '\n          TAP CLOSE',
           )
+
+          return
+        }
+
+        // ----------------------------------------
+        // MANUAL ASK
+        // ----------------------------------------
+
+        if (
+          message.type ===
+          'manual_answer'
+        ) {
+          manualAsk =
+            false
+
+          updateHud(
+            padLine(
+              'JARVIS',
+              '✓',
+            ) +
+              '\n\n' +
+              String(
+                message.text,
+              ) +
+              '\n\n' +
+              divider() +
+              '\n          TAP CLOSE',
+          )
+
+          return
+        }
+
+        // ----------------------------------------
+        // RESET
+        // ----------------------------------------
+
+        if (
+          message.type ===
+          'session_reset'
+        ) {
+          clearSessionUi()
+
+          if (
+            message.mode
+          ) {
+            mode =
+              message.mode as Mode
+
+            const found =
+              modes.indexOf(
+                mode,
+              )
+
+            if (
+              found >= 0
+            ) {
+              modeIndex =
+                found
+            }
+          }
+
+          updateHud(
+            'NEW SESSION\n\n' +
+              `${mode}\n\n` +
+              'Ready…',
+          )
+
+          statusTimer =
+            setTimeout(
+              () => {
+                statusTimer =
+                  null
+
+                enterSelectedMode()
+              },
+              700,
+            )
 
           return
         }
       } catch (error) {
         console.error(
-          'Message error:',
+          'Server message error:',
           error,
         )
       }
@@ -1169,9 +1966,15 @@ function connectSocket(
 
   socket.onclose =
     () => {
-      socket = null
+      socket =
+        null
 
-      if (!intentionalExit) {
+      sessionAttached =
+        false
+
+      if (
+        !intentionalExit
+      ) {
         scheduleReconnect()
       }
     }
@@ -1180,7 +1983,8 @@ function connectSocket(
 connectSocket()
 
 // ==================================================
-// EVENT TYPE
+// EVENT HELPER
+// Keep the tap fallback that works on your G2.
 // ==================================================
 
 function eventTypeOf(
@@ -1197,7 +2001,7 @@ function eventTypeOf(
 
   return (
     envelope.eventType ??
-    null
+    OsEventTypeList.CLICK_EVENT
   )
 }
 
@@ -1206,18 +2010,29 @@ function eventTypeOf(
 // ==================================================
 
 function exitCopilot() {
-  intentionalExit = true
+  intentionalExit =
+    true
 
-  if (reconnectTimer) {
+  clearCardTimer()
+  clearStatusTimer()
+
+  if (
+    reconnectTimer
+  ) {
     clearTimeout(
       reconnectTimer,
     )
 
-    reconnectTimer = null
+    reconnectTimer =
+      null
   }
 
-  bridge.audioControl(false)
-  micStarted = false
+  bridge.audioControl(
+    false,
+  )
+
+  micStarted =
+    false
 
   if (
     socket &&
@@ -1245,12 +2060,15 @@ const unsubscribe =
     event => {
       // ------------------------------------------
       // AUDIO
+      // Only transmit after server has attached
+      // the reconnect-safe session.
       // ------------------------------------------
 
       if (
         event.audioEvent
           ?.audioPcm &&
-        socketOpen()
+        socketOpen() &&
+        sessionAttached
       ) {
         socket?.send(
           new Uint8Array(
@@ -1281,6 +2099,7 @@ const unsubscribe =
           OsEventTypeList.DOUBLE_CLICK_EVENT
       ) {
         exitCopilot()
+
         return
       }
 
@@ -1294,18 +2113,35 @@ const unsubscribe =
         textType ===
           OsEventTypeList.SCROLL_TOP_EVENT
       ) {
-        if (selectingMode) {
-          changeMode(-1)
-          return
-        }
+        clearStatusTimer()
 
-        if (selectingCourse) {
-          changeCourse(-1)
+        if (
+          selectingMode
+        ) {
+          changeMode(-1)
+
           return
         }
 
         if (
-          choosingContext ||
+          selectingCourse
+        ) {
+          changeCourse(-1)
+
+          return
+        }
+
+        if (
+          choosingContext
+        ) {
+          changeContextOption(
+            -1,
+          )
+
+          return
+        }
+
+        if (
           speakingContext ||
           manualAsk
         ) {
@@ -1313,6 +2149,7 @@ const unsubscribe =
         }
 
         previousCard()
+
         return
       }
 
@@ -1326,18 +2163,31 @@ const unsubscribe =
         textType ===
           OsEventTypeList.SCROLL_BOTTOM_EVENT
       ) {
-        if (selectingMode) {
+        clearStatusTimer()
+
+        if (
+          selectingMode
+        ) {
           changeMode(1)
+
           return
         }
 
-        if (selectingCourse) {
+        if (
+          selectingCourse
+        ) {
           changeCourse(1)
+
           return
         }
 
-        if (choosingContext) {
-          skipContext()
+        if (
+          choosingContext
+        ) {
+          changeContextOption(
+            1,
+          )
+
           return
         }
 
@@ -1352,15 +2202,17 @@ const unsubscribe =
           cardIndex >= 0
         ) {
           nextCard()
+
           return
         }
 
         toggleNotes()
+
         return
       }
 
       // ------------------------------------------
-      // SINGLE TAP
+      // TAP
       // ------------------------------------------
 
       if (
@@ -1369,64 +2221,85 @@ const unsubscribe =
         textType ===
           OsEventTypeList.CLICK_EVENT
       ) {
-        // MODE SELECT
-        if (selectingMode) {
-          mode =
-            modes[modeIndex]
+        clearCardTimer()
+        clearStatusTimer()
 
-          selectingMode = false
+        if (
+          selectingMode
+        ) {
+          mode =
+            modes[
+              modeIndex
+            ]
+
+          selectingMode =
+            false
 
           sendControl({
-            type: 'set_mode',
+            type:
+              'set_mode',
+
             mode,
           })
 
           enterSelectedMode()
+
           return
         }
 
-        // SCHOOL COURSE SELECT
-        if (selectingCourse) {
+        if (
+          selectingCourse
+        ) {
           selectCourse()
+
           return
         }
 
-        // SALES / MEETING CONTEXT
-        if (choosingContext) {
-          startContextCapture()
+        if (
+          choosingContext
+        ) {
+          selectContextOption()
+
           return
         }
 
-        // CANCEL SPOKEN CONTEXT
-        if (speakingContext) {
+        if (
+          speakingContext
+        ) {
           cancelContextCapture()
+
           return
         }
 
-        // CANCEL ASK
-        if (manualAsk) {
+        if (
+          manualAsk
+        ) {
           cancelManualAsk()
+
           return
         }
 
-        // DISMISS CARD
         if (
           cardIndex >= 0
         ) {
-          cardIndex = -1
+          cardIndex =
+            -1
 
           listeningScreen()
+
           return
         }
 
-        // DISMISS NOTES STATUS
-        if (notesProcessing) {
-          listeningScreen()
+        if (
+          notesStarting ||
+          notesStopping ||
+          notesProcessing
+        ) {
           return
         }
 
-        // ASK ME
         startManualAsk()
+
         return
       }
 
@@ -1440,10 +2313,18 @@ const unsubscribe =
         sysType ===
           OsEventTypeList.ABNORMAL_EXIT_EVENT
       ) {
-        intentionalExit = true
+        intentionalExit =
+          true
 
-        bridge.audioControl(false)
-        micStarted = false
+        clearCardTimer()
+        clearStatusTimer()
+
+        bridge.audioControl(
+          false,
+        )
+
+        micStarted =
+          false
 
         if (socket) {
           socket.close()

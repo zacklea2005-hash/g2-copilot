@@ -16,7 +16,11 @@ const __filename =
 const __dirname =
   path.dirname(__filename)
 
-const VERSION = '13.0'
+const VERSION = '13.1'
+
+// ==================================================
+// APP
+// ==================================================
 
 const app = express()
 app.use(cors())
@@ -43,7 +47,7 @@ const wss =
   })
 
 // ==================================================
-// GOOGLE DRIVE
+// GOOGLE
 // ==================================================
 
 const GOOGLE_REDIRECT_URI =
@@ -91,7 +95,6 @@ function createDriveClient() {
 
   return google.drive({
     version: 'v3',
-
     auth:
       createGoogleOAuthClient(),
   })
@@ -116,8 +119,21 @@ const MEMORY_FILE =
     'memory.json',
   )
 
+const SESSION_DIR =
+  path.join(
+    DATA_DIR,
+    'sessions',
+  )
+
 fs.mkdirSync(
   DATA_DIR,
+  {
+    recursive: true,
+  },
+)
+
+fs.mkdirSync(
+  SESSION_DIR,
   {
     recursive: true,
   },
@@ -187,6 +203,291 @@ function saveMemory() {
     )
   }
 }
+
+// ==================================================
+// RECONNECT-SAFE SESSION STORE
+// ==================================================
+
+const activeSessions =
+  new Map()
+
+const SESSION_TTL_MS =
+  6 * 60 * 60 * 1000
+
+function validSessionId(
+  value,
+) {
+  return (
+    typeof value ===
+      'string' &&
+    /^[a-zA-Z0-9_-]{8,120}$/.test(
+      value,
+    )
+  )
+}
+
+function checkpointPath(
+  sessionId,
+) {
+  return path.join(
+    SESSION_DIR,
+    `${sessionId}.json`,
+  )
+}
+
+function blankContext() {
+  return {
+    raw: '',
+    summary: '',
+    company: '',
+    course: '',
+    topic: '',
+    modeHint: '',
+  }
+}
+
+function createStoredSession(
+  sessionId,
+) {
+  const now = Date.now()
+
+  return {
+    sessionId,
+
+    mode: 'SALES',
+
+    context:
+      blankContext(),
+
+    notesActive: false,
+    noteTranscript: [],
+
+    conversation: [],
+    rollingSummary: '',
+
+    createdAt: now,
+    updatedAt: now,
+    lastSeen: now,
+  }
+}
+
+function saveSessionCheckpoint(
+  session,
+) {
+  if (
+    !session ||
+    !validSessionId(
+      session.sessionId,
+    )
+  ) {
+    return
+  }
+
+  try {
+    fs.writeFileSync(
+      checkpointPath(
+        session.sessionId,
+      ),
+
+      JSON.stringify(
+        session,
+        null,
+        2,
+      ),
+    )
+  } catch (error) {
+    console.error(
+      'SESSION CHECKPOINT ERROR:',
+      error?.message ||
+        error,
+    )
+  }
+}
+
+function loadSessionCheckpoint(
+  sessionId,
+) {
+  try {
+    const file =
+      checkpointPath(
+        sessionId,
+      )
+
+    if (
+      !fs.existsSync(file)
+    ) {
+      return null
+    }
+
+    const parsed =
+      JSON.parse(
+        fs.readFileSync(
+          file,
+          'utf8',
+        ),
+      )
+
+    if (
+      Date.now() -
+        Number(
+          parsed.lastSeen ||
+            parsed.updatedAt ||
+            0,
+        ) >
+      SESSION_TTL_MS
+    ) {
+      try {
+        fs.unlinkSync(file)
+      } catch {
+        // ignore
+      }
+
+      return null
+    }
+
+    return {
+      ...createStoredSession(
+        sessionId,
+      ),
+
+      ...parsed,
+
+      sessionId,
+
+      context: {
+        ...blankContext(),
+
+        ...(
+          parsed.context ||
+          {}
+        ),
+      },
+
+      noteTranscript:
+        Array.isArray(
+          parsed.noteTranscript,
+        )
+          ? parsed.noteTranscript
+          : [],
+
+      conversation:
+        Array.isArray(
+          parsed.conversation,
+        )
+          ? parsed.conversation
+          : [],
+    }
+  } catch (error) {
+    console.error(
+      'SESSION CHECKPOINT LOAD ERROR:',
+      error?.message ||
+        error,
+    )
+
+    return null
+  }
+}
+
+function obtainStoredSession(
+  sessionId,
+) {
+  const inMemory =
+    activeSessions.get(
+      sessionId,
+    )
+
+  if (inMemory) {
+    inMemory.lastSeen =
+      Date.now()
+
+    return {
+      session: inMemory,
+      resumed: true,
+    }
+  }
+
+  const checkpoint =
+    loadSessionCheckpoint(
+      sessionId,
+    )
+
+  if (checkpoint) {
+    checkpoint.lastSeen =
+      Date.now()
+
+    activeSessions.set(
+      sessionId,
+      checkpoint,
+    )
+
+    return {
+      session:
+        checkpoint,
+
+      resumed: true,
+    }
+  }
+
+  const fresh =
+    createStoredSession(
+      sessionId,
+    )
+
+  activeSessions.set(
+    sessionId,
+    fresh,
+  )
+
+  saveSessionCheckpoint(
+    fresh,
+  )
+
+  return {
+    session: fresh,
+    resumed: false,
+  }
+}
+
+setInterval(
+  () => {
+    const now =
+      Date.now()
+
+    for (
+      const [
+        sessionId,
+        session,
+      ]
+      of activeSessions
+    ) {
+      if (
+        now -
+          session.lastSeen >
+        SESSION_TTL_MS
+      ) {
+        activeSessions.delete(
+          sessionId,
+        )
+
+        try {
+          const file =
+            checkpointPath(
+              sessionId,
+            )
+
+          if (
+            fs.existsSync(file)
+          ) {
+            fs.unlinkSync(file)
+          }
+        } catch {
+          // ignore cleanup failure
+        }
+      }
+    }
+  },
+  15 * 60 * 1000,
+)
 
 // ==================================================
 // CACHE
@@ -380,7 +681,8 @@ function similarity(
   let intersection = 0
 
   for (
-    const token of a
+    const token
+    of a
   ) {
     if (b.has(token)) {
       intersection += 1
@@ -394,7 +696,8 @@ function similarity(
     ]).size
 
   return (
-    intersection / union
+    intersection /
+    union
   )
 }
 
@@ -439,7 +742,7 @@ async function withRetry(
 }
 
 // ==================================================
-// SEARCH
+// RESEARCH
 // ==================================================
 
 async function cachedSearch(
@@ -463,7 +766,9 @@ async function cachedSearch(
     )}`
 
   const cached =
-    researchCache.get(key)
+    researchCache.get(
+      key,
+    )
 
   if (
     cached &&
@@ -471,18 +776,8 @@ async function cachedSearch(
       cached.createdAt <
       ttl
   ) {
-    console.log(
-      'RESEARCH CACHE HIT:',
-      query,
-    )
-
     return cached.data
   }
-
-  console.log(
-    'TAVILY SEARCH:',
-    query,
-  )
 
   const result =
     await tvly.search(
@@ -583,18 +878,26 @@ app.get(
   (req, res) => {
     res.json({
       status: 'ok',
-      version: VERSION,
+
+      version:
+        VERSION,
+
+      reconnectSafeNotes:
+        true,
+
+      confirmedNoteState:
+        true,
+
+      sessionCheckpoints:
+        true,
+
+      sessionTTLHours:
+        6,
 
       silentSchoolSelection:
         true,
 
       automaticTopicDetection:
-        true,
-
-      contextBriefing:
-        true,
-
-      sessionReset:
         true,
 
       longConversationMemory:
@@ -624,7 +927,8 @@ app.get(
       deepgramReconnect:
         true,
 
-      notes: true,
+      notes:
+        true,
 
       drive:
         Boolean(
@@ -636,7 +940,7 @@ app.get(
 )
 
 // ==================================================
-// GOOGLE AUTH
+// GOOGLE OAUTH
 // ==================================================
 
 app.get(
@@ -688,9 +992,12 @@ app.get(
       const client =
         createGoogleOAuthClient()
 
-      const { tokens } =
-        await client
-          .getToken(code)
+      const {
+        tokens,
+      } =
+        await client.getToken(
+          code,
+        )
 
       console.log(
         'GOOGLE OAUTH SUCCESS',
@@ -739,30 +1046,35 @@ async function findFolder(
       cacheKey,
     )
   ) {
-    return driveFolderCache
-      .get(cacheKey)
+    return driveFolderCache.get(
+      cacheKey,
+    )
   }
 
   const escaped =
-    escapeDriveQuery(name)
+    escapeDriveQuery(
+      name,
+    )
 
-  const q = [
+  const query = [
     `name = '${escaped}'`,
 
     `mimeType = 'application/vnd.google-apps.folder'`,
 
-    `trashed = false`,
+    'trashed = false',
 
     parentId
       ? `'${parentId}' in parents`
       : `'root' in parents`,
-  ].join(' and ')
+  ].join(
+    ' and ',
+  )
 
   const result =
     await withRetry(
       () =>
         drive.files.list({
-          q,
+          q: query,
 
           fields:
             'files(id,name)',
@@ -868,7 +1180,8 @@ async function getDriveDestination(
     )
 
   return {
-    folder: course,
+    folder:
+      course,
 
     path:
       `G2 Copilot / School / ${route.course}`,
@@ -946,7 +1259,7 @@ async function createGoogleDoc(
 }
 
 // ==================================================
-// COURSE ROUTING
+// SCHOOL
 // ==================================================
 
 const ALLOWED_COURSES = [
@@ -967,7 +1280,7 @@ async function classifySchoolCourse(
       max_tokens: 180,
 
       system: `
-Classify the lecture into:
+Classify the lecture into exactly one:
 
 STAT 340
 MATH 340
@@ -975,7 +1288,7 @@ LIS 462
 COMP SCI 320
 UNSURE
 
-Return ONLY JSON:
+Return ONLY valid JSON:
 
 {
   "course": "STAT 340",
@@ -986,14 +1299,17 @@ Return ONLY JSON:
       messages: [
         {
           role: 'user',
-          content: transcript,
+          content:
+            transcript,
         },
       ],
     })
 
   const parsed =
     parseClaudeJson(
-      extractText(response),
+      extractText(
+        response,
+      ),
     )
 
   if (
@@ -1001,7 +1317,8 @@ Return ONLY JSON:
       parsed?.course,
     ) &&
     Number(
-      parsed?.confidence || 0,
+      parsed?.confidence ||
+        0,
     ) >= 6
   ) {
     return parsed.course
@@ -1011,7 +1328,7 @@ Return ONLY JSON:
 }
 
 // ==================================================
-// G2 CONNECTION
+// CONNECTION
 // ==================================================
 
 wss.on(
@@ -1022,18 +1339,25 @@ wss.on(
     )
 
     console.log(
-      'NEW G2 JARVIS v13 SESSION',
+      'NEW G2 JARVIS v13.1 SOCKET',
     )
 
     console.log(
       '==============================\n',
     )
 
-    // ==============================================
-    // STATE
-    // ==============================================
+    // ----------------------------------------------
+    // CONNECTION-LOCAL STATE
+    // ----------------------------------------------
 
-    let mode = 'SALES'
+    let clientSessionId =
+      null
+
+    let storedSession =
+      null
+
+    let mode =
+      'SALES'
 
     let conversation = []
     let rollingSummary = ''
@@ -1075,23 +1399,17 @@ wss.on(
     let topicInferenceAttempts =
       0
 
-    let sessionContext = {
-      raw: '',
-      summary: '',
-      company: '',
-      course: '',
-      topic: '',
-      modeHint: '',
-    }
+    let sessionContext =
+      blankContext()
 
     let sessionContextIntel = ''
-
     let sessionModeIntel = {}
 
     let closingConnection =
       false
 
-    const MIN_RELEVANCE = 7
+    const MIN_RELEVANCE =
+      7
 
     // ==============================================
     // SEND
@@ -1117,7 +1435,205 @@ wss.on(
     }
 
     // ==============================================
-    // MODE PROMPTS
+    // STORED SESSION SYNC
+    // ==============================================
+
+    function persistSessionState(
+      checkpoint = false,
+    ) {
+      if (!storedSession) {
+        return
+      }
+
+      storedSession.mode =
+        mode
+
+      storedSession.context = {
+        ...sessionContext,
+      }
+
+      storedSession.notesActive =
+        noteTaking
+
+      storedSession.noteTranscript =
+        [
+          ...noteTranscript,
+        ]
+
+      storedSession.conversation =
+        conversation.slice(
+          -80,
+        )
+
+      storedSession.rollingSummary =
+        rollingSummary
+
+      storedSession.updatedAt =
+        Date.now()
+
+      storedSession.lastSeen =
+        Date.now()
+
+      if (checkpoint) {
+        saveSessionCheckpoint(
+          storedSession,
+        )
+      }
+    }
+
+    async function attachSession(
+      payload,
+    ) {
+      const requestedId =
+        String(
+          payload.sessionId ||
+            '',
+        )
+
+      if (
+        !validSessionId(
+          requestedId,
+        )
+      ) {
+        sendToG2({
+          type:
+            'session_attach_error',
+
+          text:
+            'Invalid session ID.',
+        })
+
+        return
+      }
+
+      clientSessionId =
+        requestedId
+
+      const result =
+        obtainStoredSession(
+          clientSessionId,
+        )
+
+      storedSession =
+        result.session
+
+      mode =
+        storedSession.mode ||
+        'SALES'
+
+      sessionContext = {
+        ...blankContext(),
+
+        ...(
+          storedSession.context ||
+          {}
+        ),
+      }
+
+      noteTaking =
+        storedSession
+          .notesActive === true
+
+      noteTranscript =
+        Array.isArray(
+          storedSession
+            .noteTranscript,
+        )
+          ? [
+              ...storedSession
+                .noteTranscript,
+            ]
+          : []
+
+      conversation =
+        Array.isArray(
+          storedSession
+            .conversation,
+        )
+          ? [
+              ...storedSession
+                .conversation,
+            ]
+          : []
+
+      rollingSummary =
+        String(
+          storedSession
+            .rollingSummary ||
+            '',
+        )
+
+      transcriptRevision =
+        conversation.length
+
+      analyzedRevision =
+        transcriptRevision
+
+      if (
+        sessionContext.company
+      ) {
+        await preloadSessionIntel()
+      }
+
+      persistSessionState(
+        true,
+      )
+
+      console.log(
+        result.resumed
+          ? 'SESSION REATTACHED:'
+          : 'SESSION CREATED:',
+
+        clientSessionId,
+      )
+
+      console.log(
+        'SESSION MODE:',
+        mode,
+      )
+
+      console.log(
+        'SESSION COURSE:',
+        sessionContext.course ||
+          'none',
+      )
+
+      console.log(
+        'NOTES ACTIVE:',
+        noteTaking,
+      )
+
+      console.log(
+        'NOTES RESTORED:',
+        noteTranscript.length,
+        'segments',
+      )
+
+      sendToG2({
+        type:
+          'session_attached',
+
+        sessionId:
+          clientSessionId,
+
+        resumed:
+          result.resumed,
+
+        mode,
+
+        context:
+          sessionContext,
+
+        notesActive:
+          noteTaking,
+
+        noteSegments:
+          noteTranscript.length,
+      })
+    }
+
+    // ==============================================
+    // MODE PROMPT
     // ==============================================
 
     function modePrompt() {
@@ -1129,8 +1645,7 @@ GENERAL MODE.
 
 Act like a proactive everyday JARVIS.
 
-Prioritize:
-facts, context, people, companies,
+Prioritize useful facts, people, companies,
 technology, definitions, calculations,
 corrections and useful connections.
 
@@ -1146,8 +1661,7 @@ MEETING MODE.
 
 Act like a live chief of staff.
 
-Prioritize:
-decisions, commitments, owners,
+Prioritize decisions, commitments, owners,
 deadlines, blockers, risks,
 open questions and action items.
 `
@@ -1161,12 +1675,10 @@ SCHOOL MODE.
 
 Act like an elite live tutor.
 
-Prioritize:
-concepts, definitions, formulas,
+Prioritize concepts, definitions, formulas,
 variables, intuition, examples,
 connections, misconceptions,
-professor emphasis and
-likely testable material.
+professor emphasis and likely testable material.
 
 Do not simply repeat the professor.
 Add understanding.
@@ -1178,22 +1690,16 @@ SALES MODE.
 
 Act like an elite technology sales copilot.
 
-Prioritize:
-customer pain, initiatives,
+Prioritize customer pain, initiatives,
 technical environment, cloud,
 cybersecurity, AI, data,
 infrastructure, licensing,
 vendors, competitors,
 renewals, budget, timeline,
 stakeholders, objections,
-buying signals and
-next-best actions.
+buying signals and next-best actions.
 `
     }
-
-    // ==============================================
-    // CONVERSATION
-    // ==============================================
 
     function recentConversation(
       count = 18,
@@ -1239,19 +1745,21 @@ ${recentConversation(22) || 'None'}
 
       manualAskBuffer = []
 
-      if (manualAskTimer) {
+      if (
+        manualAskTimer
+      ) {
         clearTimeout(
           manualAskTimer,
         )
 
-        manualAskTimer = null
+        manualAskTimer =
+          null
       }
 
       contextCaptureActive =
         false
 
-      contextCaptureBuffer =
-        []
+      contextCaptureBuffer = []
 
       if (
         contextCaptureTimer
@@ -1270,17 +1778,15 @@ ${recentConversation(22) || 'None'}
       topicInferenceAttempts =
         0
 
-      sessionContext = {
-        raw: '',
-        summary: '',
-        company: '',
-        course: '',
-        topic: '',
-        modeHint: '',
-      }
+      sessionContext =
+        blankContext()
 
       sessionContextIntel = ''
       sessionModeIntel = {}
+
+      persistSessionState(
+        true,
+      )
     }
 
     async function resetSession() {
@@ -1304,8 +1810,7 @@ ${recentConversation(22) || 'None'}
 
     const deepgramParams =
       new URLSearchParams({
-        model:
-          'nova-3',
+        model: 'nova-3',
 
         encoding:
           'linear16',
@@ -1313,7 +1818,8 @@ ${recentConversation(22) || 'None'}
         sample_rate:
           '16000',
 
-        channels: '1',
+        channels:
+          '1',
 
         interim_results:
           'true',
@@ -1325,7 +1831,8 @@ ${recentConversation(22) || 'None'}
           '300',
       })
 
-    let deepgramSocket = null
+    let deepgramSocket =
+      null
 
     let deepgramReconnectTimer =
       null
@@ -1381,6 +1888,12 @@ ${recentConversation(22) || 'None'}
           8000,
         )
 
+      console.log(
+        'Deepgram reconnect in',
+        delay,
+        'ms',
+      )
+
       deepgramReconnectTimer =
         setTimeout(
           () => {
@@ -1394,7 +1907,9 @@ ${recentConversation(22) || 'None'}
     }
 
     function connectDeepgram() {
-      if (closingConnection) {
+      if (
+        closingConnection
+      ) {
         return
       }
 
@@ -1459,7 +1974,7 @@ ${recentConversation(22) || 'None'}
                       }),
                     )
                   } catch {
-                    // reconnect handles it
+                    // reconnect handler
                   }
                 }
               },
@@ -1555,7 +2070,8 @@ ${recentConversation(22) || 'None'}
     async function compressConversationIfNeeded() {
       if (
         summarizingConversation ||
-        conversation.length < 34
+        conversation.length <
+          34
       ) {
         return
       }
@@ -1588,17 +2104,17 @@ goals, pain points, claims,
 decisions, objections,
 commitments, technical details,
 formulas, concepts,
-action items and
-unresolved questions.
+action items and unresolved questions.
 
-Do not invent anything.
+Do not invent information.
 
 Maximum 240 words.
 `,
 
             messages: [
               {
-                role: 'user',
+                role:
+                  'user',
 
                 content: `
 EXISTING MEMORY:
@@ -1614,12 +2130,16 @@ ${oldItems.join('\n')}
           })
 
         rollingSummary =
-          extractText(response)
+          extractText(
+            response,
+          )
 
         conversation.splice(
           0,
           oldItems.length,
         )
+
+        persistSessionState()
       } catch (error) {
         console.error(
           'Conversation compression error:',
@@ -1632,7 +2152,7 @@ ${oldItems.join('\n')}
     }
 
     // ==============================================
-    // ACCOUNT INTEL
+    // ACCOUNT INTELLIGENCE
     // ==============================================
 
     async function getAccountIntel(
@@ -1643,7 +2163,9 @@ ${oldItems.join('\n')}
       }
 
       const key =
-        normalizedText(company)
+        normalizedText(
+          company,
+        )
 
       const existing =
         persistentMemory
@@ -1673,7 +2195,8 @@ ${oldItems.join('\n')}
               searchDepth:
                 'advanced',
 
-              maxResults: 6,
+              maxResults:
+                6,
 
               ttl:
                 ACCOUNT_CACHE_MS,
@@ -1693,8 +2216,7 @@ for a technology seller.
 
 Only use supplied research.
 
-Capture:
-company direction,
+Capture company direction,
 strategic priorities,
 AI/cloud/security/data signals,
 business pressure,
@@ -1708,7 +2230,8 @@ Maximum 250 words.
 
             messages: [
               {
-                role: 'user',
+                role:
+                  'user',
 
                 content:
                   compactResearch(
@@ -1719,12 +2242,15 @@ Maximum 250 words.
           })
 
         const text =
-          extractText(response)
+          extractText(
+            response,
+          )
 
         persistentMemory
           .accounts[key] = {
           company,
           text,
+
           updatedAt:
             Date.now(),
         }
@@ -1760,10 +2286,6 @@ Maximum 250 words.
     // ==============================================
 
     async function generateContextBriefing() {
-      // Selecting a class alone should NOT
-      // create a generic distracting card.
-      // Wait for the professor to establish topic.
-
       if (
         mode === 'SCHOOL' &&
         sessionContext.course &&
@@ -1811,7 +2333,7 @@ QUESTIONS:
 2-3 questions,
 max 13 words each.
 
-Return ONLY JSON:
+Return ONLY valid JSON:
 
 {
   "cards": [
@@ -1828,7 +2350,8 @@ Do not fabricate.
 
             messages: [
               {
-                role: 'user',
+                role:
+                  'user',
 
                 content: `
 MODE:
@@ -1848,7 +2371,9 @@ ${sessionContextIntel || 'None'}
 
         const parsed =
           parseClaudeJson(
-            extractText(response),
+            extractText(
+              response,
+            ),
           )
 
         return Array.isArray(
@@ -1867,7 +2392,7 @@ ${sessionContextIntel || 'None'}
     }
 
     // ==============================================
-    // DIRECT SILENT CONTEXT
+    // SILENT CONTEXT
     // ==============================================
 
     async function applyDirectContext(
@@ -1915,37 +2440,28 @@ ${sessionContextIntel || 'None'}
               '',
           ).trim(),
 
-        modeHint: mode,
+        modeHint:
+          mode,
       }
 
-      topicInferenceAttempts = 0
+      topicInferenceAttempts =
+        0
 
       await preloadSessionIntel()
 
+      persistSessionState(
+        true,
+      )
+
       const briefing =
         await generateContextBriefing()
-
-      console.log(
-        'DIRECT CONTEXT:',
-        sessionContext,
-      )
 
       sendToG2({
         type:
           'context_ready',
 
         context: {
-          summary:
-            sessionContext.summary,
-
-          company:
-            sessionContext.company,
-
-          course:
-            sessionContext.course,
-
-          topic:
-            sessionContext.topic,
+          ...sessionContext,
         },
 
         briefing,
@@ -1978,7 +2494,7 @@ MATH 340
 LIS 462
 COMP SCI 320
 
-Return ONLY JSON:
+Return ONLY valid JSON:
 
 {
   "summary": "",
@@ -1993,19 +2509,25 @@ Do not invent information.
 
           messages: [
             {
-              role: 'user',
-              content: rawContext,
+              role:
+                'user',
+
+              content:
+                rawContext,
             },
           ],
         })
 
       const parsed =
         parseClaudeJson(
-          extractText(response),
+          extractText(
+            response,
+          ),
         )
 
       sessionContext = {
-        raw: rawContext,
+        raw:
+          rawContext,
 
         summary:
           String(
@@ -2038,9 +2560,14 @@ Do not invent information.
           ).trim(),
       }
 
-      topicInferenceAttempts = 0
+      topicInferenceAttempts =
+        0
 
       await preloadSessionIntel()
+
+      persistSessionState(
+        true,
+      )
 
       const briefing =
         await generateContextBriefing()
@@ -2050,17 +2577,7 @@ Do not invent information.
           'context_ready',
 
         context: {
-          summary:
-            sessionContext.summary,
-
-          company:
-            sessionContext.company,
-
-          course:
-            sessionContext.course,
-
-          topic:
-            sessionContext.topic,
+          ...sessionContext,
         },
 
         briefing,
@@ -2093,7 +2610,8 @@ Do not invent information.
       contextCaptureActive =
         false
 
-      contextCaptureBuffer = []
+      contextCaptureBuffer =
+        []
 
       if (!raw) {
         sendToG2({
@@ -2139,7 +2657,7 @@ Do not invent information.
     }
 
     // ==============================================
-    // AUTOMATIC SCHOOL TOPIC DETECTION
+    // SCHOOL TOPIC
     // ==============================================
 
     async function maybeInferSchoolTopic() {
@@ -2148,19 +2666,20 @@ Do not invent information.
         !sessionContext.course ||
         sessionContext.topic ||
         topicInferenceRunning ||
-        topicInferenceAttempts >= 3
+        topicInferenceAttempts >=
+          3
       ) {
         return
       }
 
       const sample =
-        recentConversation(14)
-
-      // Wait until we actually have
-      // meaningful professor speech.
+        recentConversation(
+          14,
+        )
 
       if (
-        conversation.length < 6 ||
+        conversation.length <
+          6 ||
         sample.length < 300
       ) {
         return
@@ -2178,17 +2697,17 @@ Do not invent information.
             model:
               'claude-sonnet-5',
 
-            max_tokens: 250,
+            max_tokens:
+              250,
 
             system: `
-Infer the specific lecture topic
-from the transcript.
+Infer the specific lecture topic.
 
-The selected class is:
+Selected class:
 
 ${sessionContext.course}
 
-Do not guess if the topic is still unclear.
+Do not guess if unclear.
 
 Return ONLY JSON:
 
@@ -2197,12 +2716,13 @@ Return ONLY JSON:
   "confidence": 9
 }
 
-Keep topic to roughly 2-6 words.
+Keep the topic to 2-6 words.
 `,
 
             messages: [
               {
-                role: 'user',
+                role:
+                  'user',
 
                 content:
                   sample,
@@ -2212,7 +2732,9 @@ Keep topic to roughly 2-6 words.
 
         const parsed =
           parseClaudeJson(
-            extractText(response),
+            extractText(
+              response,
+            ),
           )
 
         if (
@@ -2230,29 +2752,21 @@ Keep topic to roughly 2-6 words.
           sessionContext.summary =
             `${sessionContext.course} lecture about ${sessionContext.topic}`
 
+          persistSessionState(
+            true,
+          )
+
           console.log(
             'SCHOOL TOPIC DETECTED:',
             sessionContext.topic,
           )
-
-          // Silent state update.
-          // Frontend will not interrupt the user.
 
           sendToG2({
             type:
               'context_updated',
 
             context: {
-              summary:
-                sessionContext.summary,
-
-              company: '',
-
-              course:
-                sessionContext.course,
-
-              topic:
-                sessionContext.topic,
+              ...sessionContext,
             },
           })
         }
@@ -2268,7 +2782,7 @@ Keep topic to roughly 2-6 words.
     }
 
     // ==============================================
-    // TRIGGER
+    // TRIGGER ENGINE
     // ==============================================
 
     async function analyzeMoment() {
@@ -2285,7 +2799,7 @@ for proactive smart glasses.
 
 ${modePrompt()}
 
-Possible signals:
+Signals:
 
 PERSON
 COMPANY
@@ -2313,12 +2827,9 @@ BUDGET
 RENEWAL
 NO_SIGNAL
 
-Avoid interrupting for:
-greetings,
-filler,
-repetition,
-obvious information,
-or weak trivia.
+Avoid greetings, filler,
+repetition, obvious information,
+and weak trivia.
 
 Return ONLY JSON:
 
@@ -2338,7 +2849,8 @@ Return ONLY JSON:
 
           messages: [
             {
-              role: 'user',
+              role:
+                'user',
 
               content: `
 SESSION:
@@ -2361,7 +2873,9 @@ ${recentConversation(12)}
 
       const parsed =
         parseClaudeJson(
-          extractText(response),
+          extractText(
+            response,
+          ),
         )
 
       if (!parsed) {
@@ -2431,7 +2945,7 @@ ${recentConversation(12)}
     }
 
     // ==============================================
-    // NUMERICAL INTELLIGENCE
+    // NUMBERS
     // ==============================================
 
     async function analyzeNumbers(
@@ -2480,7 +2994,8 @@ Return ONLY JSON:
 
             messages: [
               {
-                role: 'user',
+                role:
+                  'user',
 
                 content:
                   fullWorkingContext(),
@@ -2490,7 +3005,9 @@ Return ONLY JSON:
 
         return (
           parseClaudeJson(
-            extractText(response),
+            extractText(
+              response,
+            ),
           ) || {
             useful: false,
           }
@@ -2570,7 +3087,8 @@ Return ONLY JSON:
               searchDepth:
                 'advanced',
 
-              maxResults: 6,
+              maxResults:
+                6,
             },
           )
 
@@ -2579,7 +3097,8 @@ Return ONLY JSON:
             model:
               'claude-sonnet-5',
 
-            max_tokens: 950,
+            max_tokens:
+              950,
 
             system: `
 Verify factual claims using research.
@@ -2611,11 +3130,14 @@ Return ONLY JSON:
 
             messages: [
               {
-                role: 'user',
+                role:
+                  'user',
 
                 content: `
 CLAIMS:
-${JSON.stringify(unseen)}
+${JSON.stringify(
+  unseen,
+)}
 
 RESEARCH:
 ${compactResearch(
@@ -2639,7 +3161,9 @@ ${compactResearch(
 
         return (
           parseClaudeJson(
-            extractText(response),
+            extractText(
+              response,
+            ),
           ) || {
             checked: false,
             claims: [],
@@ -2659,7 +3183,7 @@ ${compactResearch(
     }
 
     // ==============================================
-    // ENTITIES
+    // ENTITY INTELLIGENCE
     // ==============================================
 
     async function enrichEntities(
@@ -2741,7 +3265,8 @@ ${compactResearch(
             model:
               'claude-sonnet-5',
 
-            max_tokens: 500,
+            max_tokens:
+              500,
 
             system: `
 Choose entities worth enriching now.
@@ -2765,7 +3290,8 @@ Return ONLY JSON:
 
             messages: [
               {
-                role: 'user',
+                role:
+                  'user',
 
                 content: `
 SESSION:
@@ -2775,7 +3301,9 @@ CONVERSATION:
 ${recentConversation(12)}
 
 ENTITIES:
-${JSON.stringify(unseen)}
+${JSON.stringify(
+  unseen,
+)}
 `,
               },
             ],
@@ -2803,7 +3331,8 @@ ${JSON.stringify(unseen)}
                 .slice(0, 3)
             : []
 
-        const enriched = []
+        const enriched =
+          []
 
         for (
           const entity
@@ -2846,7 +3375,8 @@ ${JSON.stringify(unseen)}
                     searchDepth:
                       'basic',
 
-                    maxResults: 5,
+                    maxResults:
+                      5,
                   },
                 )
 
@@ -2867,7 +3397,8 @@ ${JSON.stringify(unseen)}
               model:
                 'claude-sonnet-5',
 
-              max_tokens: 450,
+              max_tokens:
+                450,
 
               system: `
 Create one useful entity insight.
@@ -2891,11 +3422,14 @@ Return ONLY JSON:
 
               messages: [
                 {
-                  role: 'user',
+                  role:
+                    'user',
 
                   content: `
 ENTITY:
-${JSON.stringify(entity)}
+${JSON.stringify(
+  entity,
+)}
 
 CONVERSATION:
 ${recentConversation(12)}
@@ -2951,7 +3485,8 @@ ${researchText || 'None'}
 
         return {
           useful:
-            enriched.length > 0,
+            enriched.length >
+            0,
 
           entities:
             enriched,
@@ -2990,7 +3525,8 @@ ${researchText || 'None'}
               searchDepth:
                 'basic',
 
-              maxResults: 5,
+              maxResults:
+                5,
             },
           )
 
@@ -3077,7 +3613,8 @@ ${researchText || 'None'}
             model:
               'claude-sonnet-5',
 
-            max_tokens: 1000,
+            max_tokens:
+              1000,
 
             system: `
 Analyze this live moment
@@ -3096,7 +3633,8 @@ ${schema}
 
             messages: [
               {
-                role: 'user',
+                role:
+                  'user',
 
                 content: `
 SESSION:
@@ -3114,7 +3652,9 @@ RECENT CONVERSATION:
 ${recentConversation(16)}
 
 TRIGGER:
-${JSON.stringify(trigger)}
+${JSON.stringify(
+  trigger,
+)}
 `,
               },
             ],
@@ -3122,7 +3662,9 @@ ${JSON.stringify(trigger)}
 
         const parsed =
           parseClaudeJson(
-            extractText(response),
+            extractText(
+              response,
+            ),
           )
 
         if (parsed) {
@@ -3142,7 +3684,7 @@ ${JSON.stringify(trigger)}
     }
 
     // ==============================================
-    // CARD RANKING
+    // CARDS
     // ==============================================
 
     function normalizeCard(
@@ -3188,7 +3730,8 @@ ${JSON.stringify(trigger)}
             : []
 
         if (
-          questions.length < 2
+          questions.length <
+          2
         ) {
           return null
         }
@@ -3272,7 +3815,9 @@ ${JSON.stringify(trigger)}
       return null
     }
 
-    function cardText(card) {
+    function cardText(
+      card,
+    ) {
       if (
         card.type ===
         'QUESTIONS'
@@ -3284,7 +3829,8 @@ ${JSON.stringify(trigger)}
       }
 
       return (
-        card.body || ''
+        card.body ||
+        ''
       )
     }
 
@@ -3304,7 +3850,9 @@ ${JSON.stringify(trigger)}
             highest,
 
             similarity(
-              cardText(card),
+              cardText(
+                card,
+              ),
 
               cardText(
                 existing.card,
@@ -3319,7 +3867,8 @@ ${JSON.stringify(trigger)}
     function rankCards(
       candidates,
     ) {
-      const scored = []
+      const scored =
+        []
 
       for (
         const raw
@@ -3338,7 +3887,8 @@ ${JSON.stringify(trigger)}
           )
 
         if (
-          duplicate >= 0.68
+          duplicate >=
+          0.68
         ) {
           continue
         }
@@ -3364,7 +3914,9 @@ ${JSON.stringify(trigger)}
           a.score,
       )
 
-      const selected = []
+      const selected =
+        []
+
       const seenTypes =
         new Set()
 
@@ -3396,38 +3948,8 @@ ${JSON.stringify(trigger)}
         }
       }
 
-      if (
-        selected.length < 3
-      ) {
-        for (
-          const item
-          of scored
-        ) {
-          if (
-            selected.length >=
-            3
-          ) {
-            break
-          }
-
-          if (
-            !selected.includes(
-              item.card,
-            )
-          ) {
-            selected.push(
-              item.card,
-            )
-          }
-        }
-      }
-
       return selected
     }
-
-    // ==============================================
-    // GENERATE CARDS
-    // ==============================================
 
     async function generateCandidateCards(
       trigger,
@@ -3453,11 +3975,11 @@ ${JSON.stringify(trigger)}
           model:
             'claude-sonnet-5',
 
-          max_tokens: 1400,
+          max_tokens:
+            1400,
 
           system: `
-Generate candidate HUD cards
-for proactive smart glasses.
+Generate candidate HUD cards.
 
 ${modePrompt()}
 
@@ -3520,7 +4042,8 @@ Do not repeat recent cards.
 
           messages: [
             {
-              role: 'user',
+              role:
+                'user',
 
               content: `
 SESSION:
@@ -3538,19 +4061,29 @@ RECENT CONVERSATION:
 ${recentConversation(16)}
 
 TRIGGER:
-${JSON.stringify(trigger)}
+${JSON.stringify(
+  trigger,
+)}
 
 MODE INTELLIGENCE:
-${JSON.stringify(modeIntel)}
+${JSON.stringify(
+  modeIntel,
+)}
 
 ENTITY INTELLIGENCE:
-${JSON.stringify(entityIntel)}
+${JSON.stringify(
+  entityIntel,
+)}
 
 NUMERICAL INTELLIGENCE:
-${JSON.stringify(numericalIntel)}
+${JSON.stringify(
+  numericalIntel,
+)}
 
 CLAIM VERIFICATION:
-${JSON.stringify(verification)}
+${JSON.stringify(
+  verification,
+)}
 
 LIVE RESEARCH:
 ${research}
@@ -3564,7 +4097,9 @@ ${recentText || 'None'}
 
       const parsed =
         parseClaudeJson(
-          extractText(response),
+          extractText(
+            response,
+          ),
         )
 
       return Array.isArray(
@@ -3603,13 +4138,17 @@ ${recentText || 'None'}
       return 10000
     }
 
-    function sendCards(cards) {
+    function sendCards(
+      cards,
+    ) {
       for (
         const card
         of cards
       ) {
         sendToG2({
-          type: 'card',
+          type:
+            'card',
+
           card,
         })
 
@@ -3623,7 +4162,9 @@ ${recentText || 'None'}
         console.log(
           'JARVIS CARD:',
           card.type,
-          cardText(card),
+          cardText(
+            card,
+          ),
         )
       }
 
@@ -3633,16 +4174,13 @@ ${recentText || 'None'}
         )
 
       if (
-        cards.length > 0
+        cards.length >
+        0
       ) {
         lastBundleAt =
           Date.now()
       }
     }
-
-    // ==============================================
-    // ANALYSIS LOOP
-    // ==============================================
 
     async function runAnalysisLoop() {
       if (
@@ -3774,7 +4312,7 @@ ${recentText || 'None'}
     }
 
     // ==============================================
-    // NOTES ROUTING
+    // NOTES
     // ==============================================
 
     async function determineNoteRoute(
@@ -3803,7 +4341,9 @@ ${recentText || 'None'}
           )
 
         return {
-          area: 'SCHOOL',
+          area:
+            'SCHOOL',
+
           course,
         }
       }
@@ -3813,32 +4353,37 @@ ${recentText || 'None'}
         mode === 'MEETING'
       ) {
         return {
-          area: 'WORK',
+          area:
+            'WORK',
+
           course: null,
         }
       }
 
       return {
-        area: 'GENERAL',
+        area:
+          'GENERAL',
+
         course: null,
       }
     }
-
-    // ==============================================
-    // LONG NOTES
-    // ==============================================
 
     function splitTranscript(
       transcript,
       maxChars = 14000,
     ) {
       const lines =
-        String(transcript)
+        String(
+          transcript,
+        )
           .split('\n')
           .filter(Boolean)
 
-      const chunks = []
-      let current = ''
+      const chunks =
+        []
+
+      let current =
+        ''
 
       for (
         const line
@@ -3858,7 +4403,8 @@ ${recentText || 'None'}
             )
           }
 
-          current = line
+          current =
+            line
         } else {
           current +=
             (
@@ -3891,7 +4437,8 @@ ${recentText || 'None'}
           model:
             'claude-sonnet-5',
 
-          max_tokens: 1800,
+          max_tokens:
+            1800,
 
           system: `
 Condense transcript chunk ${index}/${total}
@@ -3920,8 +4467,11 @@ Do not invent information.
 
           messages: [
             {
-              role: 'user',
-              content: chunk,
+              role:
+                'user',
+
+              content:
+                chunk,
             },
           ],
         })
@@ -3946,7 +4496,8 @@ Do not invent information.
           transcript,
         )
 
-      const results = []
+      const results =
+        []
 
       for (
         let i = 0;
@@ -3963,7 +4514,8 @@ Do not invent information.
               ),
 
             {
-              attempts: 2,
+              attempts:
+                2,
 
               label:
                 `Note chunk ${i + 1}`,
@@ -4093,14 +4645,16 @@ Return ONLY valid JSON:
               model:
                 'claude-sonnet-5',
 
-              max_tokens: 6500,
+              max_tokens:
+                6500,
 
               system:
                 notePrompt(),
 
               messages: [
                 {
-                  role: 'user',
+                  role:
+                    'user',
 
                   content: `
 SOURCE MATERIAL:
@@ -4134,7 +4688,9 @@ ${source}
         if (
           attempt < 2
         ) {
-          await sleep(1000)
+          await sleep(
+            1000,
+          )
         }
       }
 
@@ -4148,6 +4704,10 @@ ${source}
         noteTranscript.length ===
         0
       ) {
+        console.log(
+          'NOTE SAVE ABORTED: 0 segments',
+        )
+
         sendToG2({
           type:
             'notes_error',
@@ -4156,13 +4716,24 @@ ${source}
             'No speech was captured.',
         })
 
-        return
+        return false
       }
 
       const transcript =
         noteTranscript.join(
           '\n',
         )
+
+      console.log(
+        'GENERATING NOTES:',
+        transcript.length,
+        'chars',
+      )
+
+      console.log(
+        'NOTE SEGMENTS:',
+        noteTranscript.length,
+      )
 
       try {
         const route =
@@ -4184,6 +4755,11 @@ ${source}
           await getDriveDestination(
             route,
           )
+
+        console.log(
+          'DESTINATION:',
+          destination.path,
+        )
 
         const date =
           new Date()
@@ -4210,11 +4786,6 @@ ${source}
           title,
         )
 
-        console.log(
-          'DESTINATION:',
-          destination.path,
-        )
-
         sendToG2({
           type:
             'notes_saved',
@@ -4226,12 +4797,15 @@ ${source}
             destination.path,
 
           summary:
-            note.summary || '',
+            note.summary ||
+            '',
 
           url:
             doc?.webViewLink ||
             '',
         })
+
+        return true
       } catch (error) {
         console.error(
           'NOTE SAVE ERROR:',
@@ -4251,9 +4825,7 @@ ${source}
         ) {
           message =
             'Google Drive is not connected.'
-        }
-
-        if (
+        } else if (
           String(
             error?.message ||
               '',
@@ -4263,9 +4835,7 @@ ${source}
         ) {
           message =
             'Drive folder was not found.'
-        }
-
-        if (
+        } else if (
           String(
             error?.message ||
               '',
@@ -4281,40 +4851,158 @@ ${source}
           type:
             'notes_error',
 
-          text: message,
+          text:
+            message,
         })
+
+        return false
       }
     }
 
     function startNotes() {
-      if (noteTaking) {
+      console.log(
+        'NOTES START REQUEST',
+      )
+
+      console.log(
+        'NOTES SESSION:',
+        clientSessionId ||
+          'not-attached',
+      )
+
+      if (!storedSession) {
+        sendToG2({
+          type:
+            'notes_error',
+
+          text:
+            'Session is still connecting.',
+        })
+
         return
       }
 
-      noteTaking = true
-      noteTranscript = []
+      if (noteTaking) {
+        console.log(
+          'NOTES ALREADY ACTIVE:',
+          noteTranscript.length,
+          'segments',
+        )
+
+        sendToG2({
+          type:
+            'notes_started',
+
+          resumed:
+            true,
+
+          segments:
+            noteTranscript.length,
+        })
+
+        return
+      }
+
+      noteTaking =
+        true
+
+      noteTranscript =
+        []
+
+      persistSessionState(
+        true,
+      )
+
+      console.log(
+        'NOTE TAKING STARTED',
+      )
 
       sendToG2({
         type:
           'notes_started',
+
+        resumed:
+          false,
+
+        segments:
+          0,
       })
     }
 
     async function stopNotes() {
-      if (!noteTaking) {
+      console.log(
+        'NOTES STOP REQUEST',
+      )
+
+      console.log(
+        'NOTES SESSION:',
+        clientSessionId ||
+          'not-attached',
+      )
+
+      if (!storedSession) {
+        sendToG2({
+          type:
+            'notes_error',
+
+          text:
+            'Session is not attached.',
+        })
+
         return
       }
 
-      noteTaking = false
+      if (!noteTaking) {
+        console.log(
+          'NOTES STOP IGNORED: not active',
+        )
+
+        sendToG2({
+          type:
+            'notes_error',
+
+          text:
+            'Notes were not recording.',
+        })
+
+        return
+      }
+
+      noteTaking =
+        false
+
+      persistSessionState(
+        true,
+      )
 
       sendToG2({
         type:
           'notes_processing',
       })
 
-      await generateNotes()
+      const success =
+        await generateNotes()
 
-      noteTranscript = []
+      if (success) {
+        noteTranscript =
+          []
+
+        persistSessionState(
+          true,
+        )
+      } else {
+        // Keep the transcript so a save failure
+        // does not destroy the lecture.
+        persistSessionState(
+          true,
+        )
+
+        console.log(
+          'NOTE TRANSCRIPT PRESERVED AFTER SAVE FAILURE:',
+          noteTranscript.length,
+          'segments',
+        )
+      }
     }
 
     // ==============================================
@@ -4348,22 +5036,31 @@ ${source}
         )
       ) {
         await resetSession()
+
         return true
       }
 
-      const modeAliases = {
-        sales: 'SALES',
-        meeting: 'MEETING',
-        school: 'SCHOOL',
-        general: 'GENERAL',
+      const aliases = {
+        sales:
+          'SALES',
+
+        meeting:
+          'MEETING',
+
+        school:
+          'SCHOOL',
+
+        general:
+          'GENERAL',
       }
 
       for (
         const [
           phrase,
           targetMode,
-        ] of Object.entries(
-          modeAliases,
+        ]
+        of Object.entries(
+          aliases,
         )
       ) {
         if (
@@ -4376,7 +5073,9 @@ ${source}
           normalized ===
             `${phrase} mode`
         ) {
-          if (noteTaking) {
+          if (
+            noteTaking
+          ) {
             await stopNotes()
           }
 
@@ -4385,6 +5084,10 @@ ${source}
 
           clearLiveSessionState()
 
+          persistSessionState(
+            true,
+          )
+
           sendToG2({
             type:
               'mode_changed',
@@ -4392,7 +5095,9 @@ ${source}
             mode,
           })
 
-          await sleep(100)
+          await sleep(
+            100,
+          )
 
           sendToG2({
             type:
@@ -4409,7 +5114,7 @@ ${source}
     }
 
     // ==============================================
-    // ASK ME
+    // MANUAL ASK
     // ==============================================
 
     async function answerManualAsk(
@@ -4428,7 +5133,8 @@ ${source}
           model:
             'claude-sonnet-5',
 
-          max_tokens: 650,
+          max_tokens:
+            650,
 
           system: `
 Answer a direct smart-glasses question.
@@ -4447,7 +5153,8 @@ Maximum 90 words.
 
           messages: [
             {
-              role: 'user',
+              role:
+                'user',
 
               content: `
 SESSION:
@@ -4481,7 +5188,9 @@ ${question}
           'manual_answer',
 
         text:
-          extractText(response),
+          extractText(
+            response,
+          ),
       })
     }
 
@@ -4511,7 +5220,8 @@ ${question}
       manualAskActive =
         false
 
-      manualAskBuffer = []
+      manualAskBuffer =
+        []
 
       if (question) {
         answerManualAsk(
@@ -4539,83 +5249,7 @@ ${question}
     }
 
     // ==============================================
-    // RESTORE
-    // ==============================================
-
-    async function restoreSession(
-      payload,
-    ) {
-      const requested =
-        String(
-          payload.mode || '',
-        ).toUpperCase()
-
-      if (
-        [
-          'SALES',
-          'GENERAL',
-          'MEETING',
-          'SCHOOL',
-        ].includes(
-          requested,
-        )
-      ) {
-        mode = requested
-      }
-
-      if (
-        payload.context
-      ) {
-        sessionContext = {
-          raw:
-            String(
-              payload.context
-                .raw || '',
-            ),
-
-          summary:
-            String(
-              payload.context
-                .summary || '',
-            ),
-
-          company:
-            String(
-              payload.context
-                .company || '',
-            ),
-
-          course:
-            String(
-              payload.context
-                .course || '',
-            ),
-
-          topic:
-            String(
-              payload.context
-                .topic || '',
-            ),
-
-          modeHint: mode,
-        }
-
-        await preloadSessionIntel()
-      }
-
-      sendToG2({
-        type:
-          'session_restored',
-
-        mode,
-
-        context:
-          sessionContext,
-      })
-    }
-
-    // ==============================================
-    // TRANSCRIPTION
+    // TRANSCRIPT
     // ==============================================
 
     function handleDeepgramMessage(
@@ -4652,6 +5286,7 @@ ${question}
           )
 
           scheduleContextFinish()
+
           return
         }
 
@@ -4663,6 +5298,7 @@ ${question}
           )
 
           scheduleManualAskFinish()
+
           return
         }
 
@@ -4670,6 +5306,33 @@ ${question}
           noteTranscript.push(
             transcript,
           )
+
+          const count =
+            noteTranscript.length
+
+          if (
+            count === 1 ||
+            count % 10 === 0
+          ) {
+            console.log(
+              'NOTE CAPTURE:',
+              count,
+              'segments',
+            )
+          }
+
+          // Memory sync on every segment.
+          persistSessionState()
+
+          // Disk checkpoint every 10 segments.
+          if (
+            count === 1 ||
+            count % 10 === 0
+          ) {
+            persistSessionState(
+              true,
+            )
+          }
         }
 
         conversation.push(
@@ -4679,8 +5342,7 @@ ${question}
         transcriptRevision +=
           1
 
-        // School topic is inferred silently
-        // after professor speech builds up.
+        persistSessionState()
 
         maybeInferSchoolTopic()
           .catch(
@@ -4702,7 +5364,7 @@ ${question}
     }
 
     // ==============================================
-    // CONTROL
+    // CONTROLS
     // ==============================================
 
     function handleControlMessage(
@@ -4710,11 +5372,53 @@ ${question}
     ) {
       if (
         payload.type ===
+        'hello'
+      ) {
+        attachSession(
+          payload,
+        ).catch(error => {
+          console.error(
+            'Session attach error:',
+            error,
+          )
+
+          sendToG2({
+            type:
+              'session_attach_error',
+
+            text:
+              'Could not restore session.',
+          })
+        })
+
+        return
+      }
+
+      if (
+        !storedSession
+      ) {
+        sendToG2({
+          type:
+            'session_attach_error',
+
+          text:
+            'Session not attached yet.',
+        })
+
+        return
+      }
+
+      storedSession.lastSeen =
+        Date.now()
+
+      if (
+        payload.type ===
         'set_mode'
       ) {
         const requested =
           String(
-            payload.mode || '',
+            payload.mode ||
+              '',
           ).toUpperCase()
 
         if (
@@ -4727,7 +5431,12 @@ ${question}
             requested,
           )
         ) {
-          mode = requested
+          mode =
+            requested
+
+          persistSessionState(
+            true,
+          )
 
           sendToG2({
             type:
@@ -4740,7 +5449,6 @@ ${question}
         return
       }
 
-      // SILENT SCHOOL CLASS SELECTION
       if (
         payload.type ===
         'set_context'
@@ -4759,7 +5467,7 @@ ${question}
               'context_error',
 
             text:
-              'Could not set class.',
+              'Could not set context.',
           })
         })
 
@@ -4800,6 +5508,13 @@ ${question}
         contextCaptureBuffer =
           []
 
+        sessionContext =
+          blankContext()
+
+        persistSessionState(
+          true,
+        )
+
         if (
           contextCaptureTimer
         ) {
@@ -4826,7 +5541,9 @@ ${question}
         manualAskActive =
           true
 
-        manualAskBuffer = []
+        manualAskBuffer =
+          []
+
         return
       }
 
@@ -4837,7 +5554,8 @@ ${question}
         manualAskActive =
           false
 
-        manualAskBuffer = []
+        manualAskBuffer =
+          []
 
         if (
           manualAskTimer
@@ -4858,6 +5576,7 @@ ${question}
         'notes_start'
       ) {
         startNotes()
+
         return
       }
 
@@ -4879,19 +5598,6 @@ ${question}
         resetSession().catch(
           console.error,
         )
-
-        return
-      }
-
-      if (
-        payload.type ===
-        'restore_session'
-      ) {
-        restoreSession(
-          payload,
-        ).catch(
-          console.error,
-        )
       }
     }
 
@@ -4905,9 +5611,6 @@ ${question}
         data,
         isBinary,
       ) => {
-        // Frontend control JSON arrives
-        // as a text websocket message.
-
         if (!isBinary) {
           try {
             const text =
@@ -4917,20 +5620,32 @@ ${question}
                 ? data.toString(
                     'utf8',
                   )
-                : String(data)
+                : String(
+                    data,
+                  )
 
             handleControlMessage(
-              JSON.parse(text),
+              JSON.parse(
+                text,
+              ),
             )
 
             return
-          } catch {
-            // If it was not valid control JSON,
-            // do not treat it as PCM.
+          } catch (error) {
+            console.error(
+              'Control message parse error:',
+              error?.message ||
+                error,
+            )
+
+            return
           }
         }
 
-        if (isBinary) {
+        if (
+          isBinary &&
+          storedSession
+        ) {
           sendAudioToDeepgram(
             data,
           )
@@ -4939,7 +5654,7 @@ ${question}
     )
 
     // ==============================================
-    // CLEANUP
+    // DISCONNECT
     // ==============================================
 
     g2Socket.on(
@@ -4948,18 +5663,34 @@ ${question}
         closingConnection =
           true
 
-        if (
-          noteTaking &&
-          noteTranscript.length >
-            0
-        ) {
-          noteTaking = false
+        persistSessionState(
+          true,
+        )
 
-          generateNotes()
-            .catch(
-              console.error,
-            )
-        }
+        console.log(
+          'G2 DISCONNECTED',
+        )
+
+        console.log(
+          'SESSION PRESERVED:',
+          clientSessionId ||
+            'not-attached',
+        )
+
+        console.log(
+          'NOTES ACTIVE:',
+          noteTaking,
+        )
+
+        console.log(
+          'NOTES PRESERVED:',
+          noteTranscript.length,
+          'segments',
+        )
+
+        // IMPORTANT:
+        // We DO NOT generate notes here.
+        // Disconnect != end of lecture.
 
         if (
           manualAskTimer
